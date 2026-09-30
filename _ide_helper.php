@@ -25331,6 +25331,150 @@ namespace Livewire {
             }
     }
 
+namespace Illuminate\Support {
+    /**
+     * @template TKey of array-key
+     * @template-covariant TValue
+     * @implements \ArrayAccess<TKey, TValue>
+     * @implements \Illuminate\Support\Enumerable<TKey, TValue>
+     */
+    class Collection {
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param string $question
+         * @param array|string $text
+         * @param \Closure|string|null $by
+         * @param \Closure|array|string|null $describe
+         * @param float|null $threshold
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return mixed|null
+         * @static
+         */
+        public static function decide($question, $text, $by = null, $describe = null, $threshold = null, $provider = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Collection::decide($question, $text, $by, $describe, $threshold, $provider, $model, $timeout);
+        }
+
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param \Closure|array|string $by
+         * @param string $query
+         * @param int|null $limit
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int $timeout
+         * @static
+         */
+        public static function rerank($by, $query, $limit = null, $provider = null, $model = null, $timeout = 30)
+        {
+            return \Illuminate\Support\Collection::rerank($by, $query, $limit, $provider, $model, $timeout);
+        }
+
+            }
+    /**
+     */
+    class Str {
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param string $value
+         * @param int $sentences
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return string
+         * @static
+         */
+        public static function summarize($value, $sentences = 3, $provider = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Str::summarize($value, $sentences, $provider, $model, $timeout);
+        }
+
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param string $value
+         * @param string $question
+         * @param array $criteria
+         * @param float $threshold
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return bool
+         * @static
+         */
+        public static function decide($value, $question, $criteria = [], $threshold = 0.5, $provider = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Str::decide($value, $question, $criteria, $threshold, $provider, $model, $timeout);
+        }
+
+            }
+    /**
+     */
+    class Stringable {
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param int|null $dimensions
+         * @param string|null $model
+         * @param int|bool|null $cache
+         * @param int|null $timeout
+         * @param \Closure|array $providerOptions
+         * @static
+         */
+        public static function toEmbeddings($provider = null, $dimensions = null, $model = null, $cache = null, $timeout = null, $providerOptions = [])
+        {
+            return \Illuminate\Support\Stringable::toEmbeddings($provider, $dimensions, $model, $cache, $timeout, $providerOptions);
+        }
+
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $voice
+         * @param string|null $instructions
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return \Laravel\Ai\Responses\AudioResponse
+         * @static
+         */
+        public static function toAudio($provider = null, $voice = null, $instructions = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Stringable::toAudio($provider, $voice, $instructions, $model, $timeout);
+        }
+
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param int $sentences
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return string
+         * @static
+         */
+        public static function summarize($sentences = 3, $provider = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Stringable::summarize($sentences, $provider, $model, $timeout);
+        }
+
+        /**
+         * @see \Laravel\Ai\AiServiceProvider::boot()
+         * @param string $question
+         * @param array $criteria
+         * @param float $threshold
+         * @param \Laravel\Ai\Enums\Lab|array|string|null $provider
+         * @param string|null $model
+         * @param int|null $timeout
+         * @return bool
+         * @static
+         */
+        public static function decide($question, $criteria = [], $threshold = 0.5, $provider = null, $model = null, $timeout = null)
+        {
+            return \Illuminate\Support\Stringable::decide($question, $criteria, $threshold, $provider, $model, $timeout);
+        }
+
+            }
+    }
+
 namespace Illuminate\Http {
     /**
      */
@@ -25442,6 +25586,10 @@ namespace Illuminate\Routing {
             return \Illuminate\Routing\Route::defer($enabled);
         }
 
+            }
+    /**
+     */
+    class SortedMiddleware extends \Illuminate\Support\Collection {
             }
     }
 
