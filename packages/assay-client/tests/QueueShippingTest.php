@@ -17,7 +17,6 @@ use ArtisanBuild\AssayContracts\Operation;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Contracts\Queue\Queue;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -110,14 +109,26 @@ it('releases inside the bound then terminally discards without a failed job row'
     });
 
     app(Queue::class)->push(new ShipEnvelope('{"retry":true}', time() + 3600, 0), queue: 'retry');
-    app('queue.worker')->runNextJob('database', 'retry', new WorkerOptions(sleep: 0, maxTries: 3));
+    $this->artisan('queue:work', [
+        'connection' => 'database',
+        '--queue' => 'retry',
+        '--once' => true,
+        '--sleep' => 0,
+        '--tries' => 3,
+    ])->assertExitCode(0);
 
     expect(DB::table('jobs')->where('queue', 'retry')->count())->toBe(1)
         ->and(DB::table('failed_jobs')->count())->toBe(0)
         ->and($drops->transportTotal())->toBe(0);
 
     app(Queue::class)->push(new ShipEnvelope('{"terminal":true}', time() + 1, 60), queue: 'terminal');
-    app('queue.worker')->runNextJob('database', 'terminal', new WorkerOptions(sleep: 0, maxTries: 3));
+    $this->artisan('queue:work', [
+        'connection' => 'database',
+        '--queue' => 'terminal',
+        '--once' => true,
+        '--sleep' => 0,
+        '--tries' => 3,
+    ])->assertExitCode(0);
 
     expect(DB::table('jobs')->where('queue', 'terminal')->count())->toBe(0)
         ->and(DB::table('failed_jobs')->count())->toBe(0)
