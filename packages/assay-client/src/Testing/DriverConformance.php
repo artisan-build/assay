@@ -194,12 +194,19 @@ final class DriverConformance
                 throw new ConformanceViolation('The caller-supplied canary reached the projected envelope.');
             }
 
-            $job = new ShipEnvelope($json, time() + 86400);
-            self::assertPrimitiveJobState($job);
+            $serializedJob = serialize(new ShipEnvelope($json, time() + 86400));
 
-            if (str_contains(serialize($job), $scenario->canary)) {
+            if (str_contains($serializedJob, $scenario->canary)) {
                 throw new ConformanceViolation('The caller-supplied canary reached queued job state.');
             }
+
+            $job = unserialize($serializedJob, ['allowed_classes' => [ShipEnvelope::class]]);
+
+            if (! $job instanceof ShipEnvelope) {
+                throw new ConformanceViolation('The queued job could not be reconstructed safely.');
+            }
+
+            self::assertPrimitiveJobState($job);
 
             foreach (EnvelopeCodec::decode($json)->records as $record) {
                 $array = $record->toArray();
