@@ -67,6 +67,12 @@ final class DriverConformance
     private static function assertInputs(array $records, DriverScenario $scenario): void
     {
         foreach ($records as $record) {
+            $seen = [];
+
+            if (self::containsCanary($record, $scenario->canary, $seen)) {
+                throw new ConformanceViolation('The caller-supplied canary reached recorder input.');
+            }
+
             if (! in_array($record::class, self::ALLOWED_INPUTS, true)) {
                 throw new ConformanceViolation('A source object or unsupported record input reached the recorder: '.$record::class.'.');
             }
@@ -94,6 +100,44 @@ final class DriverConformance
         if (! $hasFailover || count($attempts) < 2) {
             throw new ConformanceViolation('The failover scenario must report a failover and at least two attempt ordinals.');
         }
+    }
+
+    /** @param array<int, true> $seen */
+    private static function containsCanary(mixed $value, string $canary, array &$seen): bool
+    {
+        if (is_string($value)) {
+            return str_contains($value, $canary);
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                if (self::containsCanary($item, $canary, $seen)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (! is_object($value)) {
+            return false;
+        }
+
+        $objectId = spl_object_id($value);
+
+        if (isset($seen[$objectId])) {
+            return false;
+        }
+
+        $seen[$objectId] = true;
+
+        foreach ((array) $value as $property) {
+            if (self::containsCanary($property, $canary, $seen)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param list<RecordInput> $records */

@@ -56,18 +56,26 @@ function conformanceRecords(?int $manufacturedOutput = null): array
 it('passes a source independent fake with all operations metrics failover and linkage', function (): void {
     $source = new SourceInfo('vendor/fake-source', '1.2.3');
     $records = conformanceRecords();
-    $driver = new FakeDriver('fake', $source, $records);
+    $receivedCanary = null;
+    $driver = new FakeDriver('fake', $source, static function (string $sourceValue) use (&$receivedCanary, $records): array {
+        $receivedCanary = $sourceValue;
+
+        return $records;
+    });
+    $canary = 'content-canary-must-not-ship';
 
     DriverConformance::assert($driver, new DriverScenario(
         driverName: 'fake',
         source: $source,
-        exercise: static function (string $canary): void {},
+        exercise: static function (string $canary) use ($driver): void {
+            $driver->capture($canary);
+        },
         expectedRecords: $records,
-        canary: 'content-canary-must-not-ship',
+        canary: $canary,
         supportsFailover: true,
     ));
 
-    expect(true)->toBeTrue();
+    expect($receivedCanary)->toBe($canary);
 });
 
 it('fails a deliberately broken driver that leaks a source object', function (): void {
@@ -77,12 +85,14 @@ it('fails a deliberately broken driver that leaks a source object', function ():
     {
         public function __construct(public object $sourceEvent) {}
     };
-    $driver = new FakeDriver('broken-leak', $source, [$leaky]);
+    $driver = new FakeDriver('broken-leak', $source, static fn (string $sourceValue): array => [$leaky]);
 
     expect(fn () => DriverConformance::assert($driver, new DriverScenario(
         driverName: 'broken-leak',
         source: $source,
-        exercise: static function (string $canary): void {},
+        exercise: static function (string $canary) use ($driver): void {
+            $driver->capture($canary);
+        },
         expectedRecords: [$leaky],
         canary: 'leak-canary',
     )))->toThrow(ConformanceViolation::class, 'source object');
@@ -92,16 +102,48 @@ it('fails a deliberately broken driver that manufactures zero for an omitted met
     $source = new SourceInfo('vendor/broken-source', '1.0.0');
     $expected = conformanceRecords();
     $actual = conformanceRecords(0);
-    $driver = new FakeDriver('broken-zero', $source, $actual);
+    $driver = new FakeDriver('broken-zero', $source, static fn (string $sourceValue): array => $actual);
 
     expect(fn () => DriverConformance::assert($driver, new DriverScenario(
         driverName: 'broken-zero',
         source: $source,
-        exercise: static function (string $canary): void {},
+        exercise: static function (string $canary) use ($driver): void {
+            $driver->capture($canary);
+        },
         expectedRecords: $expected,
         canary: 'zero-canary',
         supportsFailover: true,
     )))->toThrow(ConformanceViolation::class, 'zero manufacturing');
+});
+
+it('fails a deliberately broken driver that projects the source canary', function (): void {
+    $source = new SourceInfo('vendor/broken-source', '1.0.0');
+    $at = new DateTimeImmutable('2026-09-30T12:00:00.123456+00:00');
+    $expected = new SingleOperationInput(
+        operation: Operation::Embeddings,
+        invocationId: 'embeddings-1',
+        at: $at,
+        usage: new Usage(inputTokens: 8),
+    );
+    $driver = new FakeDriver('broken-canary', $source, static fn (string $sourceValue): array => [
+        new SingleOperationInput(
+            operation: Operation::Embeddings,
+            invocationId: 'embeddings-1',
+            at: $at,
+            subject: $sourceValue,
+            usage: new Usage(inputTokens: 8),
+        ),
+    ]);
+
+    expect(fn () => DriverConformance::assert($driver, new DriverScenario(
+        driverName: 'broken-canary',
+        source: $source,
+        exercise: static function (string $canary) use ($driver): void {
+            $driver->capture($canary);
+        },
+        expectedRecords: [$expected],
+        canary: 'projected-source-canary',
+    )))->toThrow(ConformanceViolation::class, 'canary reached recorder input');
 });
 
 it('keeps unknown source absence inert', function (): void {

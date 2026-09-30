@@ -50,7 +50,6 @@ it('defaults the bounded retry deadline to twenty four hours', function (): void
 });
 
 it('uses Laravel queue encryption and serializes primitive job state only', function (): void {
-    $canary = 'plaintext-source-canary';
     $recorder = new BufferedRecorder(
         driver: 'fake',
         source: new SourceInfo('vendor/source', '1.0.0'),
@@ -74,15 +73,13 @@ it('uses Laravel queue encryption and serializes primitive job state only', func
     $command = $decoded['data']['command'];
 
     expect($payload)->not->toContain('"audio_seconds":1.25')
-        ->not->toContain($canary)
         ->and($command)->not->toContain('ShipEnvelope');
 
     $serialized = app(Encrypter::class)->decrypt($command);
     $job = unserialize($serialized, ['allowed_classes' => [ShipEnvelope::class]]);
 
     expect($job)->toBeInstanceOf(ShipEnvelope::class)
-        ->and($serialized)->toContain('"audio_seconds":1.25')
-        ->not->toContain($canary);
+        ->and($serialized)->toContain('"audio_seconds":1.25');
 
     $envelope = EnvelopeCodec::decode($job->envelopeJson);
 
