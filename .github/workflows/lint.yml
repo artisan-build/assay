@@ -32,3 +32,6 @@ jobs:
 
       - name: Check code style
         run: composer lint:check
+
+      - name: Check package code style
+        run: composer packages:lint:check

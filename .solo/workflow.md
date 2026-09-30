@@ -42,7 +42,7 @@ handoff.
 - exact required contexts: `ci (8.4)`, `ci (8.5)`, and `quality`.
 - `.github/workflows/tests.yml`: root PHPStan/Larastan, root Pest, both package static-analysis and
   Pest suites, and Composer audits on PHP 8.4 and 8.5 against PostgreSQL 16.
-- `.github/workflows/lint.yml`: root Pint check on PHP 8.5.
+- `.github/workflows/lint.yml`: root and package Pint checks on PHP 8.5.
 - both workflows target pushes and pull requests to `main`.
 
 Do not rename the jobs or matrix entries without updating branch protection; required contexts are
