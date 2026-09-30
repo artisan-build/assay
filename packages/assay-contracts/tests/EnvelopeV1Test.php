@@ -8,6 +8,7 @@ use ArtisanBuild\AssayContracts\Client;
 use ArtisanBuild\AssayContracts\Content;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
+use ArtisanBuild\AssayContracts\FinishReason;
 use ArtisanBuild\AssayContracts\InvalidEnvelope;
 use ArtisanBuild\AssayContracts\Model;
 use ArtisanBuild\AssayContracts\Operation;
@@ -27,6 +28,8 @@ function validRecordPayload(array $overrides = []): array
         'source' => 'laravel-ai',
         'type' => 'run.start',
         'operation' => 'agent',
+        'invocation_id' => 'run-1',
+        'attempt' => 1,
         'at' => '2026-09-30T12:34:56.123456Z',
         'capture' => 'usage',
         'sampled' => true,
@@ -60,17 +63,13 @@ function decodePayload(array $payload): EnvelopeV1
     return EnvelopeCodec::decode(json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
 }
 
-it('round-trips every defined field through canonical JSON', function (): void {
+it('round-trips a canonical envelope and usage-bearing record', function (): void {
     $usage = new Usage(
         inputTokens: 10,
         outputTokens: 11,
         cacheReadInputTokens: 12,
         cacheWriteInputTokens: 13,
         reasoningTokens: 14,
-        imageInputTokens: 15,
-        imageOutputTokens: 16,
-        audioSeconds: 1.25,
-        searchUnits: 2.5,
     );
     $recordId = UuidV7::generate();
     $envelopeId = UuidV7::generate();
@@ -85,7 +84,7 @@ it('round-trips every defined field through canonical JSON', function (): void {
         records: [new RecordV1(
             recordId: $recordId,
             source: 'laravel-ai',
-            type: RecordType::ToolEnd,
+            type: RecordType::StepEnd,
             operation: Operation::Agent,
             at: new Timestamp('2026-09-30T12:34:57.654321-05:00'),
             capture: CaptureMode::Full,
@@ -95,16 +94,13 @@ it('round-trips every defined field through canonical JSON', function (): void {
             parentInvocationId: 'parent-invocation-1',
             parentToolInvocationId: 'parent-tool-1',
             step: 0,
-            toolInvocationId: 'tool-1',
             subject: 'user:123',
             usage: $usage,
             model: new Model(requested: 'requested-model', responded: 'responded-model', provider: 'provider-name'),
             content: new Content(['messages' => [['role' => 'user', 'body' => 'test-created body']]]),
             agent: 'App\\Ai\\SupportAgent',
-            tool: 'lookup_order',
             durationMs: 812.4,
-            outcome: Outcome::Failed,
-            failureClass: RuntimeException::class,
+            finishReason: FinishReason::Stop,
         )],
         deploy: 'release-123',
     );
@@ -119,19 +115,18 @@ it('round-trips every defined field through canonical JSON', function (): void {
         ->and($wire['deploy'])->toBe('release-123')
         ->and($wire['records'][0]['record_id'])->toBe((string) $recordId)
         ->and($wire['records'][0]['usage'])->toBe($usage->toArray())
-        ->and($wire['records'][0]['usage']['audio_seconds'])->toBe(1.25)
-        ->and($wire['records'][0]['usage']['search_units'])->toBe(2.5)
         ->and($wire['records'][0]['duration_ms'])->toBe(812.4)
-        ->and($wire['records'][0]['failure_class'])->toBe(RuntimeException::class)
         ->and($wire['records'][0]['content']['messages'][0]['body'])->toBe('test-created body')
         ->and($wire)->not->toHaveKey('app_id');
 });
 
 it('round-trips every record type', function (RecordType $type): void {
     $metadata = match ($type) {
-        RecordType::RunEnd, RecordType::ToolEnd => ['outcome' => Outcome::Completed->value],
-        RecordType::RunFailover => ['invocation_id' => 'run-1', 'attempt' => 1],
-        RecordType::ToolApproval => ['approval' => Approval::Requested->value],
+        RecordType::RunEnd => ['outcome' => Outcome::Completed->value],
+        RecordType::StepStart, RecordType::StepEnd, RecordType::StepFail => ['step' => 0],
+        RecordType::ToolStart => ['tool_invocation_id' => 'tool-1'],
+        RecordType::ToolEnd => ['tool_invocation_id' => 'tool-1', 'outcome' => Outcome::Completed->value],
+        RecordType::ToolApproval => ['tool_invocation_id' => 'tool-1', 'approval' => Approval::Requested->value],
         default => [],
     };
     $decoded = decodePayload(validEnvelopePayload([
@@ -144,8 +139,16 @@ it('round-trips every record type', function (RecordType $type): void {
 })->with(RecordType::cases());
 
 it('round-trips every operation', function (Operation $operation): void {
+    $record = validRecordPayload([
+        'operation' => $operation->value,
+    ]);
+
+    if ($operation !== Operation::Agent) {
+        unset($record['attempt']);
+    }
+
     $decoded = decodePayload(validEnvelopePayload([
-        'records' => [validRecordPayload(['operation' => $operation->value])],
+        'records' => [$record],
     ]));
 
     expect($decoded->records[0]->operation)->toBe($operation);
@@ -162,6 +165,8 @@ it('round-trips every capture mode', function (CaptureMode $capture): void {
 it('keeps omitted metrics and optional fields absent', function (): void {
     $payload = validEnvelopePayload([
         'records' => [validRecordPayload([
+            'type' => 'run.end',
+            'outcome' => 'completed',
             'usage' => ['output_tokens' => 0],
         ])],
     ]);
@@ -170,8 +175,6 @@ it('keeps omitted metrics and optional fields absent', function (): void {
 
     expect($wire)->not->toHaveKey('deploy')
         ->and($wire['records'][0])->not->toHaveKeys([
-            'invocation_id',
-            'attempt',
             'parent_invocation_id',
             'parent_tool_invocation_id',
             'step',
@@ -182,9 +185,10 @@ it('keeps omitted metrics and optional fields absent', function (): void {
             'tool',
             'duration_ms',
             'finish_reason',
-            'outcome',
             'approval',
             'failure_class',
+            'failure_capture',
+            'replay_inputs_omitted',
             'content',
         ])
         ->and($wire['records'][0]['usage'])->toBe(['output_tokens' => 0])
@@ -207,6 +211,8 @@ it('ignores additive fields at every defined object layer', function (): void {
         ]],
         'records' => [validRecordPayload([
             'future_record' => true,
+            'type' => 'run.end',
+            'outcome' => 'completed',
             'usage' => ['input_tokens' => 7, 'future_usage' => 8],
             'model' => ['requested' => 'model-a', 'future_model' => true],
         ])],
@@ -256,6 +262,8 @@ it('encodes and decodes constructed empty content as an object', function (): vo
             at: new Timestamp('2026-09-30T12:34:57.123456Z'),
             capture: CaptureMode::Full,
             sampled: true,
+            invocationId: 'run-1',
+            attempt: 1,
             content: new Content([]),
             outcome: Outcome::Completed,
         )],

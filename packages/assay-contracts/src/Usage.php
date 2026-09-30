@@ -7,13 +7,13 @@ namespace ArtisanBuild\AssayContracts;
 final readonly class Usage
 {
     public function __construct(
-        public int|float|null $inputTokens = null,
-        public int|float|null $outputTokens = null,
-        public int|float|null $cacheReadInputTokens = null,
-        public int|float|null $cacheWriteInputTokens = null,
-        public int|float|null $reasoningTokens = null,
-        public int|float|null $imageInputTokens = null,
-        public int|float|null $imageOutputTokens = null,
+        public ?int $inputTokens = null,
+        public ?int $outputTokens = null,
+        public ?int $cacheReadInputTokens = null,
+        public ?int $cacheWriteInputTokens = null,
+        public ?int $reasoningTokens = null,
+        public ?int $imageInputTokens = null,
+        public ?int $imageOutputTokens = null,
         public int|float|null $audioSeconds = null,
         public int|float|null $searchUnits = null,
     ) {
@@ -34,16 +34,33 @@ final readonly class Usage
     public static function fromArray(array $data): self
     {
         return new self(
-            inputTokens: self::metric($data, 'input_tokens'),
-            outputTokens: self::metric($data, 'output_tokens'),
-            cacheReadInputTokens: self::metric($data, 'cache_read_input_tokens'),
-            cacheWriteInputTokens: self::metric($data, 'cache_write_input_tokens'),
-            reasoningTokens: self::metric($data, 'reasoning_tokens'),
-            imageInputTokens: self::metric($data, 'image_input_tokens'),
-            imageOutputTokens: self::metric($data, 'image_output_tokens'),
-            audioSeconds: self::metric($data, 'audio_seconds'),
-            searchUnits: self::metric($data, 'search_units'),
+            inputTokens: self::tokenMetric($data, 'input_tokens'),
+            outputTokens: self::tokenMetric($data, 'output_tokens'),
+            cacheReadInputTokens: self::tokenMetric($data, 'cache_read_input_tokens'),
+            cacheWriteInputTokens: self::tokenMetric($data, 'cache_write_input_tokens'),
+            reasoningTokens: self::tokenMetric($data, 'reasoning_tokens'),
+            imageInputTokens: self::tokenMetric($data, 'image_input_tokens'),
+            imageOutputTokens: self::tokenMetric($data, 'image_output_tokens'),
+            audioSeconds: self::numberMetric($data, 'audio_seconds'),
+            searchUnits: self::numberMetric($data, 'search_units'),
         );
+    }
+
+    public function validateFor(Operation $operation): void
+    {
+        $allowed = match ($operation) {
+            Operation::Reranking => ['input_tokens', 'search_units'],
+            Operation::Transcription => [...self::textMetrics(), 'audio_seconds'],
+            Operation::Image => [...self::textMetrics(), 'image_input_tokens', 'image_output_tokens'],
+            Operation::Embeddings, Operation::Audio => ['input_tokens', 'output_tokens'],
+            Operation::Agent, Operation::Classification => self::textMetrics(),
+        };
+
+        foreach (array_keys($this->toArray()) as $metric) {
+            if (! in_array($metric, $allowed, true)) {
+                throw new InvalidEnvelope("Usage metric {$metric} is not applicable to {$operation->value}.");
+            }
+        }
     }
 
     /** @return array<string, int|float> */
@@ -63,7 +80,23 @@ final readonly class Usage
     }
 
     /** @param array<string, mixed> $data */
-    private static function metric(array $data, string $key): int|float|null
+    private static function tokenMetric(array $data, string $key): ?int
+    {
+        if (! array_key_exists($key, $data)) {
+            return null;
+        }
+
+        $value = $data[$key];
+
+        if (! is_int($value) || $value < 0) {
+            throw new InvalidEnvelope("usage.{$key} must be a non-negative integer.");
+        }
+
+        return $value;
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function numberMetric(array $data, string $key): int|float|null
     {
         if (! array_key_exists($key, $data)) {
             return null;
@@ -76,5 +109,17 @@ final readonly class Usage
         }
 
         return $value;
+    }
+
+    /** @return list<string> */
+    private static function textMetrics(): array
+    {
+        return [
+            'input_tokens',
+            'output_tokens',
+            'cache_read_input_tokens',
+            'cache_write_input_tokens',
+            'reasoning_tokens',
+        ];
     }
 }
