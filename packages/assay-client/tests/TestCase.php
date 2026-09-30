@@ -23,22 +23,32 @@ abstract class TestCase extends Orchestra
     protected function defineEnvironment($app): void
     {
         $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('a', 32)));
-        $app['config']->set('cache.default', 'file');
-        $app['config']->set('cache.stores.file', [
-            'driver' => 'file',
-            'path' => sys_get_temp_dir().'/assay-client-cache-'.spl_object_id($app),
+        $app['config']->set('cache.default', 'database');
+        $app['config']->set('cache.stores.database', [
+            'driver' => 'database',
+            'connection' => 'pgsql',
+            'table' => 'cache',
+            'lock_connection' => 'pgsql',
+            'lock_table' => 'cache_locks',
         ]);
-        $app['config']->set('database.default', 'sqlite');
-        $app['config']->set('database.connections.sqlite', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
+        $app['config']->set('database.default', 'pgsql');
+        $app['config']->set('database.connections.pgsql', [
+            'driver' => 'pgsql',
+            'host' => (string) env('DB_HOST', '127.0.0.1'),
+            'port' => (string) env('DB_PORT', '5432'),
+            'database' => (string) env('DB_DATABASE', 'assay_app_test'),
+            'username' => (string) env('DB_USERNAME', 'root'),
+            'password' => (string) env('DB_PASSWORD', ''),
+            'charset' => 'utf8',
             'prefix' => '',
-            'foreign_key_constraints' => true,
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
         ]);
         $app['config']->set('queue.default', 'database');
         $app['config']->set('queue.connections.database', [
             'driver' => 'database',
-            'connection' => 'sqlite',
+            'connection' => 'pgsql',
             'table' => 'jobs',
             'queue' => 'default',
             'retry_after' => 90,
@@ -46,7 +56,7 @@ abstract class TestCase extends Orchestra
         ]);
         $app['config']->set('queue.failed', [
             'driver' => 'database-uuids',
-            'database' => 'sqlite',
+            'database' => 'pgsql',
             'table' => 'failed_jobs',
         ]);
     }

@@ -11,9 +11,12 @@ use ArtisanBuild\AssayClient\Internal\CacheDropCounter;
 use ArtisanBuild\AssayClient\Internal\DriverRegistrar;
 use ArtisanBuild\AssayClient\Internal\NullCaptureDriver;
 use ArtisanBuild\AssayClient\Internal\QueueEnvelopeDispatcher;
+use ArtisanBuild\AssayClient\Jobs\ShipEnvelope;
 use ArtisanBuild\AssayClient\Transport\HttpTransport;
 use Illuminate\Contracts\Cache\Repository;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\ServiceProvider;
 use Throwable;
 
@@ -38,6 +41,27 @@ final class AssayClientServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/assay.php' => config_path('assay.php'),
         ], 'assay-config');
+
+        try {
+            $this->app->make(Dispatcher::class)->listen(JobProcessing::class, function (JobProcessing $event): void {
+                try {
+                    $retryUntil = $event->job->retryUntil();
+
+                    if ($event->job->resolveQueuedJobClass() !== ShipEnvelope::class
+                        || ! is_int($retryUntil)
+                        || time() <= $retryUntil) {
+                        return;
+                    }
+
+                    $event->job->delete();
+                    $this->app->make(DropCounter::class)->incrementTransport();
+                } catch (Throwable) {
+                    // Telemetry lifecycle failures cannot fail the host queue worker.
+                }
+            });
+        } catch (Throwable) {
+            // Telemetry listener registration cannot prevent the host application from booting.
+        }
 
         $this->app->booted(function (): void {
             try {

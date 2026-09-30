@@ -21,6 +21,16 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function (): void {
+    Schema::dropIfExists('failed_jobs');
+    Schema::dropIfExists('jobs');
+    Schema::dropIfExists('cache');
+
+    Schema::create('cache', function (Blueprint $table): void {
+        $table->string('key')->primary();
+        $table->mediumText('value');
+        $table->integer('expiration')->index();
+    });
+
     Schema::create('jobs', function (Blueprint $table): void {
         $table->bigIncrements('id');
         $table->string('queue')->index();
@@ -39,6 +49,12 @@ beforeEach(function (): void {
         $table->longText('exception');
         $table->timestamp('failed_at')->useCurrent();
     });
+});
+
+afterEach(function (): void {
+    Schema::dropIfExists('failed_jobs');
+    Schema::dropIfExists('jobs');
+    Schema::dropIfExists('cache');
 });
 
 it('defaults the bounded retry deadline to twenty four hours', function (): void {
@@ -129,4 +145,74 @@ it('releases inside the bound then terminally discards without a failed job row'
     expect(DB::table('jobs')->where('queue', 'terminal')->count())->toBe(0)
         ->and(DB::table('failed_jobs')->count())->toBe(0)
         ->and($drops->transportTotal())->toBe(1);
+});
+
+it('discards an already overdue encrypted job before Laravel can fail it', function (): void {
+    $drops = new InMemoryDropCounter;
+    $transport = new class implements Transport
+    {
+        public int $calls = 0;
+
+        public function send(string $envelopeJson): void
+        {
+            $this->calls++;
+        }
+    };
+    app()->instance(DropCounter::class, $drops);
+    app()->instance(Transport::class, $transport);
+
+    resolve(Queue::class)->push(new ShipEnvelope('{"overdue":true}', time() - 1), queue: 'overdue');
+
+    expect((string) DB::table('jobs')->where('queue', 'overdue')->value('payload'))
+        ->not->toContain('{"overdue":true}');
+
+    $this->artisan('queue:work', [
+        'connection' => 'database',
+        '--queue' => 'overdue',
+        '--once' => true,
+        '--sleep' => 0,
+        '--tries' => 3,
+    ])->assertExitCode(0);
+
+    expect(DB::table('jobs')->where('queue', 'overdue')->count())->toBe(0)
+        ->and(DB::table('failed_jobs')->count())->toBe(0)
+        ->and($transport->calls)->toBe(0)
+        ->and($drops->transportTotal())->toBe(1);
+});
+
+it('contains drop counter failure while discarding an overdue job', function (): void {
+    app()->instance(DropCounter::class, new class implements DropCounter
+    {
+        public function transportTotal(): int
+        {
+            return 0;
+        }
+
+        public function hookTotal(): int
+        {
+            return 0;
+        }
+
+        public function incrementTransport(): int
+        {
+            throw new RuntimeException('cache unavailable');
+        }
+
+        public function incrementHook(): int
+        {
+            return 0;
+        }
+    });
+
+    resolve(Queue::class)->push(new ShipEnvelope('{"overdue":true}', time() - 1), queue: 'counter-failure');
+    $this->artisan('queue:work', [
+        'connection' => 'database',
+        '--queue' => 'counter-failure',
+        '--once' => true,
+        '--sleep' => 0,
+        '--tries' => 3,
+    ])->assertExitCode(0);
+
+    expect(DB::table('jobs')->where('queue', 'counter-failure')->count())->toBe(0)
+        ->and(DB::table('failed_jobs')->count())->toBe(0);
 });
