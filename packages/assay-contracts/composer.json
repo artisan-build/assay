@@ -1,0 +1,41 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "artisan-build/assay-contracts",
+    "description": "Versioned wire contracts shared by the Assay client and server.",
+    "keywords": ["assay", "ai", "telemetry", "laravel", "contracts"],
+    "license": "MIT",
+    "type": "library",
+    "version": "1.0.0",
+    "require": {
+        "php": "^8.3"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.27",
+        "pestphp/pest": "^4.7",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "ArtisanBuild\\AssayContracts\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ArtisanBuild\\AssayContracts\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "lint": "pint",
+        "lint:check": "pint --test",
+        "stan": "phpstan analyse --memory-limit=256M",
+        "test": "pest"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
