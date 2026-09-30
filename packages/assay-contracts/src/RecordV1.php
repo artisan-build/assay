@@ -8,6 +8,8 @@ use ArtisanBuild\AssayContracts\Internal\Shape;
 
 final readonly class RecordV1
 {
+    public ?float $durationMs;
+
     public function __construct(
         public UuidV7 $recordId,
         public string $source,
@@ -26,7 +28,20 @@ final readonly class RecordV1
         public ?Usage $usage = null,
         public ?Model $model = null,
         public ?Content $content = null,
+        public ?string $agent = null,
+        public ?string $tool = null,
+        int|float|null $durationMs = null,
+        public ?FinishReason $finishReason = null,
+        public ?Outcome $outcome = null,
+        public ?Approval $approval = null,
+        public ?string $failureClass = null,
     ) {
+        if (is_int($durationMs)) {
+            throw new InvalidEnvelope('Record duration_ms must be a float.');
+        }
+
+        $this->durationMs = $durationMs;
+
         if ($this->source === '') {
             throw new InvalidEnvelope('Record source must be a non-empty string.');
         }
@@ -42,6 +57,8 @@ final readonly class RecordV1
         if ($this->content !== null && $this->capture !== CaptureMode::Full) {
             throw new InvalidEnvelope('Record content requires full capture.');
         }
+
+        $this->validateMetadata();
     }
 
     /** @param array<string, mixed> $data */
@@ -73,6 +90,13 @@ final readonly class RecordV1
             usage: self::usage($data),
             model: self::model($data),
             content: self::content($data),
+            agent: Shape::optionalString($data, 'agent', 'record'),
+            tool: Shape::optionalString($data, 'tool', 'record'),
+            durationMs: Shape::optionalFloat($data, 'duration_ms', 'record'),
+            finishReason: self::finishReason($data),
+            outcome: self::outcome($data),
+            approval: self::approval($data),
+            failureClass: Shape::optionalString($data, 'failure_class', 'record'),
         );
     }
 
@@ -96,8 +120,128 @@ final readonly class RecordV1
             'subject' => $this->subject,
             'usage' => $this->usage?->toArray(),
             'model' => $this->model?->toArray(),
+            'agent' => $this->agent,
+            'tool' => $this->tool,
+            'duration_ms' => $this->durationMs,
+            'finish_reason' => $this->finishReason?->value,
+            'outcome' => $this->outcome?->value,
+            'approval' => $this->approval?->value,
+            'failure_class' => $this->failureClass,
             'content' => $this->content?->jsonSerialize(),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private function validateMetadata(): void
+    {
+        if ($this->agent !== null) {
+            self::metadataString($this->agent, 'agent');
+
+            if ($this->operation !== Operation::Agent) {
+                throw new InvalidEnvelope('Record agent is allowed only for the agent operation.');
+            }
+        }
+
+        if ($this->tool !== null) {
+            self::metadataString($this->tool, 'tool');
+
+            if (! in_array($this->type, [RecordType::ToolStart, RecordType::ToolEnd, RecordType::ToolApproval], true)) {
+                throw new InvalidEnvelope('Record tool is allowed only on tool records.');
+            }
+        }
+
+        if ($this->durationMs !== null) {
+            if (! is_finite($this->durationMs) || $this->durationMs < 0) {
+                throw new InvalidEnvelope('Record duration_ms must be finite and non-negative.');
+            }
+
+            $durationAllowed = in_array($this->type, [RecordType::StepEnd, RecordType::StepFail, RecordType::ToolEnd], true)
+                || ($this->type === RecordType::RunEnd && $this->operation !== Operation::Agent);
+
+            if (! $durationAllowed) {
+                throw new InvalidEnvelope('Record duration_ms is not allowed for this type and operation.');
+            }
+        }
+
+        if ($this->finishReason !== null && ! in_array($this->type, [RecordType::StepEnd, RecordType::RunEnd], true)) {
+            throw new InvalidEnvelope('Record finish_reason is allowed only on step.end and run.end.');
+        }
+
+        $requiresOutcome = in_array($this->type, [RecordType::RunEnd, RecordType::ToolEnd], true);
+
+        if ($requiresOutcome !== ($this->outcome !== null)) {
+            throw new InvalidEnvelope('Record outcome is required on run.end and tool.end and forbidden elsewhere.');
+        }
+
+        if (($this->type === RecordType::ToolApproval) !== ($this->approval !== null)) {
+            throw new InvalidEnvelope('Record approval is required on tool.approval and forbidden elsewhere.');
+        }
+
+        if ($this->failureClass !== null) {
+            self::metadataString($this->failureClass, 'failure_class');
+
+            if (preg_match('~^[A-Za-z_\\\\][A-Za-z0-9_\\\\]*$~D', $this->failureClass) !== 1) {
+                throw new InvalidEnvelope('Record failure_class must be a PHP class name.');
+            }
+
+            $failureAllowed = $this->type === RecordType::StepFail
+                || $this->type === RecordType::RunFailover
+                || ($this->type === RecordType::RunEnd && $this->outcome === Outcome::Failed)
+                || ($this->type === RecordType::ToolEnd && $this->outcome === Outcome::Failed);
+
+            if (! $failureAllowed) {
+                throw new InvalidEnvelope('Record failure_class is not allowed for this type and outcome.');
+            }
+        }
+    }
+
+    private static function metadataString(string $value, string $field): void
+    {
+        $length = preg_match_all('/./us', $value);
+
+        if ($length === false || $length < 1 || $length > 255 || preg_match('/\p{Cc}/u', $value) === 1) {
+            throw new InvalidEnvelope("Record {$field} must contain 1 to 255 characters and no control characters.");
+        }
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function finishReason(array $data): ?FinishReason
+    {
+        return self::enum($data, 'finish_reason', FinishReason::class);
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function outcome(array $data): ?Outcome
+    {
+        return self::enum($data, 'outcome', Outcome::class);
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function approval(array $data): ?Approval
+    {
+        return self::enum($data, 'approval', Approval::class);
+    }
+
+    /**
+     * @template T of \BackedEnum
+     *
+     * @param  array<string, mixed>  $data
+     * @param  class-string<T>  $enum
+     * @return T|null
+     */
+    private static function enum(array $data, string $field, string $enum): ?\BackedEnum
+    {
+        if (! array_key_exists($field, $data)) {
+            return null;
+        }
+
+        $value = Shape::string($data, $field, 'record');
+        $case = $enum::tryFrom($value);
+
+        if ($case === null) {
+            throw new InvalidEnvelope("Record {$field} is unsupported.");
+        }
+
+        return $case;
     }
 
     /** @param array<string, mixed> $data */
