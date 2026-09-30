@@ -34,9 +34,15 @@ final readonly class HttpTransport implements Transport
     private function pendingRequest(): PendingRequest
     {
         try {
-            return $this->http->withClientIdentity();
+            $request = $this->http->__call('withClientIdentity', []);
+
+            if ($request instanceof PendingRequest) {
+                return $request;
+            }
         } catch (Throwable) {
-            return $this->http->createPendingRequest();
+            // Identity is attribution only, so transport remains fail-open.
         }
+
+        return $this->http->createPendingRequest();
     }
 }

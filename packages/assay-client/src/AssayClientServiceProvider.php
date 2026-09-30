@@ -26,13 +26,11 @@ final class AssayClientServiceProvider extends ServiceProvider
         $this->app->bindIf(CaptureDriver::class, NullCaptureDriver::class);
         $this->app->bind(Transport::class, HttpTransport::class);
         $this->app->bind(EnvelopeDispatcher::class, QueueEnvelopeDispatcher::class);
-        $this->app->singleton(DropCounter::class, function (Application $app): DropCounter {
-            return new CacheDropCounter(
-                cache: $app->make(Repository::class),
-                application: (string) config('assay.app'),
-                environment: (string) config('assay.environment'),
-            );
-        });
+        $this->app->singleton(fn (Application $app): DropCounter => new CacheDropCounter(
+            cache: $app->make(Repository::class),
+            application: (string) config('assay.app'),
+            environment: (string) config('assay.environment'),
+        ));
     }
 
     public function boot(): void

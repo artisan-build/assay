@@ -25,7 +25,7 @@ use Throwable;
 final class DriverConformance
 {
     /** @var list<class-string<RecordInput>> */
-    private const ALLOWED_INPUTS = [
+    private const array ALLOWED_INPUTS = [
         RunInput::class,
         AttemptInput::class,
         StepInput::class,
@@ -207,7 +207,6 @@ final class DriverConformance
         $reflection = new ReflectionObject($job);
 
         foreach ($reflection->getProperties() as $property) {
-            $property->setAccessible(true);
             $value = $property->getValue($job);
 
             if (! is_scalar($value) && $value !== null) {

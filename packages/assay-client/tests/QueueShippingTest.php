@@ -59,7 +59,7 @@ it('uses Laravel queue encryption and serializes primitive job state only', func
         batchSize: 1,
         retryForSeconds: 86400,
         drops: new InMemoryDropCounter,
-        dispatcher: app(EnvelopeDispatcher::class),
+        dispatcher: resolve(EnvelopeDispatcher::class),
     );
     $recorder->record(new SingleOperationInput(
         operation: Operation::Transcription,
@@ -75,7 +75,7 @@ it('uses Laravel queue encryption and serializes primitive job state only', func
     expect($payload)->not->toContain('"audio_seconds":1.25')
         ->and($command)->not->toContain('ShipEnvelope');
 
-    $serialized = app(Encrypter::class)->decrypt($command);
+    $serialized = resolve(Encrypter::class)->decrypt($command);
     $job = unserialize($serialized, ['allowed_classes' => [ShipEnvelope::class]]);
 
     expect($job)->toBeInstanceOf(ShipEnvelope::class)
@@ -88,7 +88,6 @@ it('uses Laravel queue encryption and serializes primitive job state only', func
     $reflection = new ReflectionObject($job);
 
     foreach ($reflection->getProperties() as $property) {
-        $property->setAccessible(true);
         $value = $property->getValue($job);
         expect(is_scalar($value) || $value === null)->toBeTrue("{$property->getName()} is primitive");
     }
@@ -105,7 +104,7 @@ it('releases inside the bound then terminally discards without a failed job row'
         }
     });
 
-    app(Queue::class)->push(new ShipEnvelope('{"retry":true}', time() + 3600, 0), queue: 'retry');
+    resolve(Queue::class)->push(new ShipEnvelope('{"retry":true}', time() + 3600, 0), queue: 'retry');
     $this->artisan('queue:work', [
         'connection' => 'database',
         '--queue' => 'retry',
@@ -118,7 +117,7 @@ it('releases inside the bound then terminally discards without a failed job row'
         ->and(DB::table('failed_jobs')->count())->toBe(0)
         ->and($drops->transportTotal())->toBe(0);
 
-    app(Queue::class)->push(new ShipEnvelope('{"terminal":true}', time() + 1, 60), queue: 'terminal');
+    resolve(Queue::class)->push(new ShipEnvelope('{"terminal":true}', time() + 1, 60), queue: 'terminal');
     $this->artisan('queue:work', [
         'connection' => 'database',
         '--queue' => 'terminal',

@@ -8,5 +8,5 @@ use ArtisanBuild\AssayClient\Internal\NullCaptureDriver;
 
 it('loads the client service provider', function (): void {
     expect(app()->getLoadedProviders())->toHaveKey(AssayClientServiceProvider::class, true)
-        ->and(app(CaptureDriver::class))->toBeInstanceOf(NullCaptureDriver::class);
+        ->and(resolve(CaptureDriver::class))->toBeInstanceOf(NullCaptureDriver::class);
 });

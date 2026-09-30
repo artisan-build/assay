@@ -9,12 +9,12 @@ use DateInterval;
 use Illuminate\Contracts\Cache\Repository;
 use RuntimeException;
 
-final class CacheDropCounter implements DropCounter
+final readonly class CacheDropCounter implements DropCounter
 {
-    private readonly string $prefix;
+    private string $prefix;
 
     public function __construct(
-        private readonly Repository $cache,
+        private Repository $cache,
         string $application,
         string $environment,
     ) {
