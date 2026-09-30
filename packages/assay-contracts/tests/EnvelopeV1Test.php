@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use ArtisanBuild\AssayContracts\Approval;
 use ArtisanBuild\AssayContracts\CaptureMode;
 use ArtisanBuild\AssayContracts\Client;
 use ArtisanBuild\AssayContracts\Content;
@@ -10,6 +11,7 @@ use ArtisanBuild\AssayContracts\EnvelopeV1;
 use ArtisanBuild\AssayContracts\InvalidEnvelope;
 use ArtisanBuild\AssayContracts\Model;
 use ArtisanBuild\AssayContracts\Operation;
+use ArtisanBuild\AssayContracts\Outcome;
 use ArtisanBuild\AssayContracts\RecordType;
 use ArtisanBuild\AssayContracts\RecordV1;
 use ArtisanBuild\AssayContracts\Source;
@@ -84,7 +86,7 @@ it('round-trips every defined field through canonical JSON', function (): void {
             recordId: $recordId,
             source: 'laravel-ai',
             type: RecordType::ToolEnd,
-            operation: Operation::Embeddings,
+            operation: Operation::Agent,
             at: new Timestamp('2026-09-30T12:34:57.654321-05:00'),
             capture: CaptureMode::Full,
             sampled: false,
@@ -98,6 +100,11 @@ it('round-trips every defined field through canonical JSON', function (): void {
             usage: $usage,
             model: new Model(requested: 'requested-model', responded: 'responded-model', provider: 'provider-name'),
             content: new Content(['messages' => [['role' => 'user', 'body' => 'test-created body']]]),
+            agent: 'App\\Ai\\SupportAgent',
+            tool: 'lookup_order',
+            durationMs: 812.4,
+            outcome: Outcome::Failed,
+            failureClass: RuntimeException::class,
         )],
         deploy: 'release-123',
     );
@@ -114,13 +121,20 @@ it('round-trips every defined field through canonical JSON', function (): void {
         ->and($wire['records'][0]['usage'])->toBe($usage->toArray())
         ->and($wire['records'][0]['usage']['audio_seconds'])->toBe(1.25)
         ->and($wire['records'][0]['usage']['search_units'])->toBe(2.5)
+        ->and($wire['records'][0]['duration_ms'])->toBe(812.4)
+        ->and($wire['records'][0]['failure_class'])->toBe(RuntimeException::class)
         ->and($wire['records'][0]['content']['messages'][0]['body'])->toBe('test-created body')
         ->and($wire)->not->toHaveKey('app_id');
 });
 
 it('round-trips every record type', function (RecordType $type): void {
+    $metadata = match ($type) {
+        RecordType::RunEnd, RecordType::ToolEnd => ['outcome' => Outcome::Completed->value],
+        RecordType::ToolApproval => ['approval' => Approval::Requested->value],
+        default => [],
+    };
     $decoded = decodePayload(validEnvelopePayload([
-        'records' => [validRecordPayload(['type' => $type->value])],
+        'records' => [validRecordPayload(['type' => $type->value, ...$metadata])],
     ]));
 
     expect($decoded->records[0]->type)->toBe($type);
@@ -161,6 +175,13 @@ it('keeps omitted metrics and optional fields absent', function (): void {
             'tool_invocation_id',
             'subject',
             'model',
+            'agent',
+            'tool',
+            'duration_ms',
+            'finish_reason',
+            'outcome',
+            'approval',
+            'failure_class',
             'content',
         ])
         ->and($wire['records'][0]['usage'])->toBe(['output_tokens' => 0])
@@ -233,6 +254,7 @@ it('encodes and decodes constructed empty content as an object', function (): vo
             capture: CaptureMode::Full,
             sampled: true,
             content: new Content([]),
+            outcome: Outcome::Completed,
         )],
     );
 

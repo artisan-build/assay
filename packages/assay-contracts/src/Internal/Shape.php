@@ -97,6 +97,20 @@ final class Shape
     }
 
     /** @param array<string, mixed> $data */
+    public static function optionalFloat(array $data, string $key, string $path): ?float
+    {
+        if (! array_key_exists($key, $data)) {
+            return null;
+        }
+
+        if (! is_float($data[$key])) {
+            throw new InvalidEnvelope("{$path}.{$key} must be a float.");
+        }
+
+        return $data[$key];
+    }
+
+    /** @param array<string, mixed> $data */
     public static function boolean(array $data, string $key, string $path): bool
     {
         $value = $data[$key] ?? null;
