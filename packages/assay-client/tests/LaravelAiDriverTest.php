@@ -255,7 +255,7 @@ it('passes DriverConformance with projected v1 agent events', function (): void 
 });
 
 it('captures real prompt and drained stream failover with concrete starts and prunes attempts', function (): void {
-    $events = app(Dispatcher::class);
+    $events = resolve(Dispatcher::class);
     $recorder = new LaravelAiCollectingRecorder;
     $driver = new LaravelAiDriver($events);
     $driver->register($recorder);
