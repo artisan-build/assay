@@ -16,21 +16,37 @@ use ArtisanBuild\AssayContracts\UuidV7;
 /** @param array<string, mixed> $overrides */
 function metadataPayload(array $overrides = []): array
 {
-    return array_replace([
+    $payload = array_replace([
         'record_id' => (string) UuidV7::generate(),
         'source' => 'fake',
         'type' => RecordType::RunStart->value,
         'operation' => Operation::Agent->value,
+        'invocation_id' => 'run-1',
+        'attempt' => 1,
         'at' => '2026-09-30T12:34:56.123456Z',
         'capture' => CaptureMode::Usage->value,
         'sampled' => false,
     ], $overrides);
+
+    if (in_array($payload['type'], ['step.start', 'step.end', 'step.fail'], true) && ! array_key_exists('step', $overrides)) {
+        $payload['step'] = 0;
+    }
+
+    if (in_array($payload['type'], ['tool.start', 'tool.end', 'tool.approval'], true) && ! array_key_exists('tool_invocation_id', $overrides)) {
+        $payload['tool_invocation_id'] = 'tool-1';
+    }
+
+    if ($payload['operation'] !== Operation::Agent->value && ! array_key_exists('attempt', $overrides)) {
+        unset($payload['attempt']);
+    }
+
+    return $payload;
 }
 
 /** @param array<string, mixed> $overrides */
 function metadataRecord(array $overrides = []): RecordV1
 {
-    return new RecordV1(...array_replace([
+    $fields = array_replace([
         'recordId' => UuidV7::generate(),
         'source' => 'fake',
         'type' => RecordType::RunStart,
@@ -38,7 +54,23 @@ function metadataRecord(array $overrides = []): RecordV1
         'at' => new Timestamp('2026-09-30T12:34:56.123456Z'),
         'capture' => CaptureMode::Usage,
         'sampled' => false,
-    ], $overrides));
+        'invocationId' => 'run-1',
+        'attempt' => 1,
+    ], $overrides);
+
+    if (in_array($fields['type'], [RecordType::StepStart, RecordType::StepEnd, RecordType::StepFail], true) && ! array_key_exists('step', $overrides)) {
+        $fields['step'] = 0;
+    }
+
+    if (in_array($fields['type'], [RecordType::ToolStart, RecordType::ToolEnd, RecordType::ToolApproval], true) && ! array_key_exists('toolInvocationId', $overrides)) {
+        $fields['toolInvocationId'] = 'tool-1';
+    }
+
+    if ($fields['operation'] !== Operation::Agent && ! array_key_exists('attempt', $overrides)) {
+        unset($fields['attempt']);
+    }
+
+    return new RecordV1(...$fields);
 }
 
 it('round-trips every finish reason', function (FinishReason $finishReason): void {

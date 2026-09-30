@@ -10,6 +10,10 @@ final readonly class RecordV1
 {
     public ?float $durationMs;
 
+    /** @var list<ReplayInputOmission>|null */
+    public ?array $replayInputsOmitted;
+
+    /** @param list<ReplayInputOmission>|null $replayInputsOmitted */
     public function __construct(
         public UuidV7 $recordId,
         public string $source,
@@ -35,12 +39,15 @@ final readonly class RecordV1
         public ?Outcome $outcome = null,
         public ?Approval $approval = null,
         public ?string $failureClass = null,
+        public ?FailureCapture $failureCapture = null,
+        ?array $replayInputsOmitted = null,
     ) {
         if (is_int($durationMs)) {
             throw new InvalidEnvelope('Record duration_ms must be a float.');
         }
 
         $this->durationMs = $durationMs;
+        $this->replayInputsOmitted = self::replayInputsOmitted($replayInputsOmitted);
 
         if ($this->source === '') {
             throw new InvalidEnvelope('Record source must be a non-empty string.');
@@ -58,7 +65,7 @@ final readonly class RecordV1
             throw new InvalidEnvelope('Record content requires full capture.');
         }
 
-        $this->validateAttribution();
+        $this->validateShape();
         $this->validateMetadata();
     }
 
@@ -98,12 +105,17 @@ final readonly class RecordV1
             outcome: self::outcome($data),
             approval: self::approval($data),
             failureClass: Shape::optionalString($data, 'failure_class', 'record'),
+            failureCapture: self::failureCapture($data),
+            replayInputsOmitted: self::replayInputsOmittedFromArray($data),
         );
     }
 
     /** @return array<string, mixed> */
     public function toArray(): array
     {
+        $this->validateShape();
+        $this->validateMetadata();
+
         return array_filter([
             'record_id' => (string) $this->recordId,
             'source' => $this->source,
@@ -128,6 +140,10 @@ final readonly class RecordV1
             'outcome' => $this->outcome?->value,
             'approval' => $this->approval?->value,
             'failure_class' => $this->failureClass,
+            'failure_capture' => $this->failureCapture?->value,
+            'replay_inputs_omitted' => $this->replayInputsOmitted === null
+                ? null
+                : array_map(static fn (ReplayInputOmission $omission): string => $omission->value, $this->replayInputsOmitted),
             'content' => $this->content?->jsonSerialize(),
         ], static fn (mixed $value): bool => $value !== null);
     }
@@ -193,27 +209,87 @@ final readonly class RecordV1
                 throw new InvalidEnvelope('Record failure_class is not allowed for this type and outcome.');
             }
         }
+
+        if ($this->failureCapture !== null
+            && ($this->type !== RecordType::RunEnd
+                || $this->operation !== Operation::Agent
+                || $this->outcome !== Outcome::Failed
+                || $this->sampled
+                || $this->capture !== CaptureMode::Full)) {
+            throw new InvalidEnvelope('Record failure_capture requires an unsampled failed agent run.end in full capture mode.');
+        }
+
+        if ($this->replayInputsOmitted !== null
+            && ($this->type !== RecordType::RunEnd || $this->operation !== Operation::Agent)) {
+            throw new InvalidEnvelope('Record replay_inputs_omitted is allowed only on agent run.end.');
+        }
+
+        if ($this->usage !== null) {
+            if (! in_array($this->type, [RecordType::StepEnd, RecordType::RunEnd], true)) {
+                throw new InvalidEnvelope('Record usage is allowed only on step.end and run.end.');
+            }
+
+            if ($this->operation === null) {
+                throw new InvalidEnvelope('Record usage requires an operation.');
+            }
+
+            $this->usage->validateFor($this->operation);
+        }
     }
 
-    private function validateAttribution(): void
+    private function validateShape(): void
     {
         $unattributedFailover = $this->type === RecordType::RunFailover && $this->invocationId === null;
 
-        if (! $unattributedFailover) {
-            if ($this->operation === null) {
-                throw new InvalidEnvelope('Record operation is required.');
+        if ($unattributedFailover) {
+            if ($this->operation !== null || $this->attempt !== null || $this->parentInvocationId !== null || $this->parentToolInvocationId !== null) {
+                throw new InvalidEnvelope('Unattributed run.failover must omit operation and invocation metadata.');
+            }
+
+            if ($this->step !== null || $this->toolInvocationId !== null) {
+                throw new InvalidEnvelope('Unattributed run.failover must omit step and tool invocation metadata.');
+            }
+
+            if ($this->model?->provider === null || $this->model->provider === ''
+                || $this->model->requested === null || $this->model->requested === '') {
+                throw new InvalidEnvelope('Unattributed run.failover requires model provider and requested.');
             }
 
             return;
         }
 
-        if ($this->operation !== null || $this->attempt !== null || $this->parentInvocationId !== null || $this->parentToolInvocationId !== null) {
-            throw new InvalidEnvelope('Unattributed run.failover must omit operation and invocation metadata.');
+        if ($this->operation === null) {
+            throw new InvalidEnvelope('Record operation is required.');
         }
 
-        if ($this->model?->provider === null || $this->model->provider === ''
-            || $this->model->requested === null || $this->model->requested === '') {
-            throw new InvalidEnvelope('Unattributed run.failover requires model provider and requested.');
+        if ($this->invocationId === null || $this->invocationId === '') {
+            throw new InvalidEnvelope('Record invocation_id is required.');
+        }
+
+        $agentAttempt = $this->operation === Operation::Agent;
+
+        if ($agentAttempt !== ($this->attempt !== null)) {
+            throw new InvalidEnvelope('Record attempt is required exactly for the agent operation.');
+        }
+
+        if (in_array($this->type, [RecordType::StepStart, RecordType::StepEnd, RecordType::StepFail], true)) {
+            if ($this->operation !== Operation::Agent || $this->step === null || $this->toolInvocationId !== null) {
+                throw new InvalidEnvelope('Step records require agent operation, step, and no tool_invocation_id.');
+            }
+
+            return;
+        }
+
+        if (in_array($this->type, [RecordType::ToolStart, RecordType::ToolEnd, RecordType::ToolApproval], true)) {
+            if ($this->operation !== Operation::Agent || $this->toolInvocationId === null || $this->toolInvocationId === '') {
+                throw new InvalidEnvelope('Tool records require agent operation and tool_invocation_id.');
+            }
+
+            return;
+        }
+
+        if ($this->step !== null || $this->toolInvocationId !== null) {
+            throw new InvalidEnvelope('Run records must omit step and tool_invocation_id.');
         }
     }
 
@@ -258,6 +334,12 @@ final readonly class RecordV1
     private static function approval(array $data): ?Approval
     {
         return self::enum($data, 'approval', Approval::class);
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function failureCapture(array $data): ?FailureCapture
+    {
+        return self::enum($data, 'failure_capture', FailureCapture::class);
     }
 
     /**
@@ -311,5 +393,49 @@ final readonly class RecordV1
         }
 
         return Content::fromValue($data['content']);
+    }
+
+    /**
+     * @param  array<array-key, mixed>|null  $values
+     * @return list<ReplayInputOmission>|null
+     */
+    private static function replayInputsOmitted(?array $values): ?array
+    {
+        if ($values === null) {
+            return null;
+        }
+
+        if (! array_is_list($values) || $values === []) {
+            throw new InvalidEnvelope('Record replay_inputs_omitted must be a non-empty list.');
+        }
+
+        foreach ($values as $value) {
+            if (! $value instanceof ReplayInputOmission) {
+                throw new InvalidEnvelope('Every replay_inputs_omitted value must be a ReplayInputOmission.');
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return list<ReplayInputOmission>|null
+     */
+    private static function replayInputsOmittedFromArray(array $data): ?array
+    {
+        if (! array_key_exists('replay_inputs_omitted', $data)) {
+            return null;
+        }
+
+        $values = Shape::list($data['replay_inputs_omitted'], 'record.replay_inputs_omitted');
+
+        return array_map(static function (mixed $value): ReplayInputOmission {
+            if (! is_string($value) || ReplayInputOmission::tryFrom($value) === null) {
+                throw new InvalidEnvelope('Record replay_inputs_omitted contains an unsupported value.');
+            }
+
+            return ReplayInputOmission::from($value);
+        }, $values);
     }
 }
