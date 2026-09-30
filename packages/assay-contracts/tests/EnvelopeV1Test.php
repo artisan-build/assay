@@ -215,6 +215,50 @@ it('preserves product-defined content object and list shapes', function (): void
     expect(json_encode($roundTripped->records[0]->content, JSON_THROW_ON_ERROR))->toBe($contentJson);
 });
 
+it('encodes and decodes constructed empty content as an object', function (): void {
+    $envelope = new EnvelopeV1(
+        envelopeId: UuidV7::generate(),
+        sentAt: new Timestamp('2026-09-30T12:34:56.123456Z'),
+        client: new Client('artisan-build/assay-client', '1.2.3'),
+        sources: [new Source('laravel-ai', 'laravel/ai', '1.0.0')],
+        environment: 'testing',
+        droppedTransportTotal: 0,
+        droppedHookTotal: 0,
+        records: [new RecordV1(
+            recordId: UuidV7::generate(),
+            source: 'laravel-ai',
+            type: RecordType::RunEnd,
+            operation: Operation::Agent,
+            at: new Timestamp('2026-09-30T12:34:57.123456Z'),
+            capture: CaptureMode::Full,
+            sampled: true,
+            content: new Content([]),
+        )],
+    );
+
+    $json = EnvelopeCodec::encode($envelope);
+    $wire = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
+    $roundTripped = json_decode(EnvelopeCodec::encode(EnvelopeCodec::decode($json)), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($wire->records[0]->content)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($wire->records[0]->content))->toBe([])
+        ->and($roundTripped->records[0]->content)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($roundTripped->records[0]->content))->toBe([]);
+});
+
+it('rejects constructed empty usage and model objects', function (): void {
+    expect(fn (): Usage => new Usage)->toThrow(InvalidEnvelope::class)
+        ->and(fn (): Model => new Model)->toThrow(InvalidEnvelope::class);
+});
+
+it('rejects decoded empty usage and model objects', function (string $field): void {
+    $payload = json_decode(json_encode(validEnvelopePayload(), JSON_THROW_ON_ERROR), false, 512, JSON_THROW_ON_ERROR);
+    $payload->records[0]->{$field} = new stdClass;
+
+    expect(fn (): EnvelopeV1 => EnvelopeCodec::decode(json_encode($payload, JSON_THROW_ON_ERROR)))
+        ->toThrow(InvalidEnvelope::class);
+})->with(['usage', 'model']);
+
 it('generates and validates UUIDv7 values', function (): void {
     $generated = UuidV7::generate();
 
@@ -261,8 +305,11 @@ it('rejects malformed object and list shapes', function (Closure $mutate): void 
     'records object' => fn (array &$payload) => $payload['records'] = ['record_id' => 'invalid'],
     'record scalar' => fn (array &$payload) => $payload['records'] = ['record'],
     'usage list' => fn (array &$payload) => $payload['records'][0]['usage'] = [1, 2],
+    'empty usage list' => fn (array &$payload) => $payload['records'][0]['usage'] = [],
     'model list' => fn (array &$payload) => $payload['records'][0]['model'] = ['a', 'b'],
+    'empty model list' => fn (array &$payload) => $payload['records'][0]['model'] = [],
     'content list' => fn (array &$payload) => $payload['records'][0]['content'] = ['a', 'b'],
+    'empty content list' => fn (array &$payload) => $payload['records'][0]['content'] = [],
     'missing records' => function (array &$payload): void {
         unset($payload['records']);
     },

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ArtisanBuild\AssayContracts;
 
-use ArtisanBuild\AssayContracts\Internal\Shape;
 use JsonException;
 use JsonSerializable;
 use LogicException;
@@ -37,7 +36,7 @@ final readonly class Content implements JsonSerializable
     public static function fromValue(mixed $value): self
     {
         if (! $value instanceof stdClass) {
-            if (! is_array($value) || ($value !== [] && array_is_list($value))) {
+            if (! is_array($value) || array_is_list($value)) {
                 throw new InvalidEnvelope('content must be an object.');
             }
 
@@ -50,7 +49,7 @@ final readonly class Content implements JsonSerializable
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        return Shape::object(json_decode($this->json, true, 512, JSON_THROW_ON_ERROR), 'content');
+        return get_object_vars($this->jsonSerialize());
     }
 
     public function jsonSerialize(): stdClass

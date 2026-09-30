@@ -12,7 +12,11 @@ final readonly class Model
         public ?string $requested = null,
         public ?string $responded = null,
         public ?string $provider = null,
-    ) {}
+    ) {
+        if ($this->toArray() === []) {
+            throw new InvalidEnvelope('Model must contain at least one value.');
+        }
+    }
 
     /** @param array<string, mixed> $data */
     public static function fromArray(array $data): self

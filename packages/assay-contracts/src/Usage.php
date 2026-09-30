@@ -17,7 +17,13 @@ final readonly class Usage
         public int|float|null $audioSeconds = null,
         public int|float|null $searchUnits = null,
     ) {
-        foreach ($this->toArray() as $metric => $value) {
+        $metrics = $this->toArray();
+
+        if ($metrics === []) {
+            throw new InvalidEnvelope('Usage must contain at least one reported metric.');
+        }
+
+        foreach ($metrics as $metric => $value) {
             if ($value < 0 || (is_float($value) && ! is_finite($value))) {
                 throw new InvalidEnvelope("Usage metric {$metric} must be finite and non-negative.");
             }

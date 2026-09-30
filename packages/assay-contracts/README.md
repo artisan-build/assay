@@ -67,11 +67,12 @@ at every defined v1 object layer so additive wire changes remain compatible.
 
 `Usage` accepts only `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
 `cache_write_input_tokens`, `reasoning_tokens`, `image_input_tokens`, `image_output_tokens`,
-`audio_seconds`, and `search_units`. It omits every metric whose constructor argument is `null`. Values
-may be integers or finite non-negative floats, so fractional units retain their precision. `Model`
-independently and optionally carries `requested`, `responded`, and `provider`. `Content` accepts an
-associative array and carries that JSON object only for full capture; this package does not interpret or
-persist its structure.
+`audio_seconds`, and `search_units`. When present it requires at least one reported metric and omits every
+metric whose constructor argument is `null`. Values may be integers or finite non-negative floats, so
+fractional units retain their precision. `Model` independently and optionally carries `requested`,
+`responded`, and `provider`, and requires at least one value when present. `Content` accepts an associative
+array and carries that JSON object only for full capture; this package does not interpret or persist its
+structure.
 
 `EnvelopeV1::fromArray()`, `RecordV1::fromArray()`, and the metadata DTO `fromArray()` methods are
 available when callers already have decoded data. `toArray()` methods emit canonical snake_case wire
