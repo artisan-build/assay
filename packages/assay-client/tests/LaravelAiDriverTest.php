@@ -307,7 +307,7 @@ it('captures real prompt and drained stream failover with concrete starts and pr
     $events->dispatch(new AgentFailed($starts[0]->invocationId, $firstPrompt, new RuntimeException('secret failure')));
 });
 
-it('projects every non-agent usage shape with parent links and LIFO failover attribution', function (): void {
+it('projects every non-agent usage shape with synchronous parents and unattributed failovers', function (): void {
     $events = new Dispatcher;
     $recorder = new LaravelAiCollectingRecorder;
     $driver = new LaravelAiDriver($events);
@@ -359,10 +359,11 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
         ->and($starts[0]->model->provider)->toBe('operations')
         ->and($starts[0]->model->responded)->toBeNull()
         ->and($failovers)->toHaveCount(2)
-        ->and($failovers[0]->operation)->toBe(Operation::Embeddings)
-        ->and($failovers[0]->invocationId)->toBe('emb-a')
+        ->and($failovers[0]->operation)->toBeNull()
+        ->and($failovers[0]->invocationId)->toBeNull()
         ->and($failovers[0]->attempt)->toBeNull()
-        ->and($failovers[0]->parent)->toEqual(new ParentLink('parent-run', 'parent-tool'))
+        ->and($failovers[0]->parent)->toBeNull()
+        ->and($failovers[0]->model?->requested)->toBe('embedding-model')
         ->and($failovers[1]->invocationId)->toBeNull()
         ->and($failovers[1]->attempt)->toBeNull()
         ->and($failovers[1]->operation)->toBeNull()
@@ -373,7 +374,8 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
     $byOperation = [];
     foreach ($operations as $operation) {
         $byOperation[$operation->operation->value] = $operation;
-        expect($operation->parent)->toEqual(new ParentLink('parent-run', 'parent-tool'));
+        expect($operation->parent)->toEqual(new ParentLink('parent-run', 'parent-tool'))
+            ->and($operation->durationMs)->toBeNull();
     }
 
     expect($byOperation['embeddings']->usage?->toArray())->toBe(['input_tokens' => 0, 'output_tokens' => 2])
@@ -410,7 +412,7 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
         ->and($queued)->toBeInstanceOf(ShipEnvelope::class);
 });
 
-it('attributes nested non-agent failover to the most recent active invocation', function (): void {
+it('reads non-agent parent linkage independently at start and completion', function (): void {
     $events = new Dispatcher;
     $recorder = new LaravelAiCollectingRecorder;
     (new LaravelAiDriver($events))->register($recorder);
@@ -418,28 +420,34 @@ it('attributes nested non-agent failover to the most recent active invocation', 
     app()['config']->set('ai.providers.nested', ['driver' => 'openai', 'key' => 'safe']);
     $provider = $manager->instance('nested');
     $imagePrompt = new ImagePrompt('safe', [], null, null, $provider, 'image-model');
-    $audioPrompt = new AudioPrompt('safe', 'voice', 'format', $provider, 'audio-model');
-
-    $events->dispatch(new GeneratingImage('outer-image', $provider, 'image-model', $imagePrompt));
-    $events->dispatch(new GeneratingAudio('inner-audio', $provider, 'audio-model', $audioPrompt));
-    $events->dispatch(new ProviderFailedOver($provider, 'audio-model', new ProviderConnectionException('safe')));
-    $events->dispatch(new ImageGenerated(
-        'outer-image',
+    ParentInvocation::within('start-parent', 'start-tool', fn () => $events->dispatch(
+        new GeneratingImage('image-1', $provider, 'image-model', $imagePrompt),
+    ));
+    $events->dispatch(new ProviderFailedOver($provider, 'image-model', new ProviderConnectionException('safe')));
+    ParentInvocation::within('end-parent', 'end-tool', fn () => $events->dispatch(new ImageGenerated(
+        'image-1',
         $provider,
         'image-model',
         $imagePrompt,
         new ImageResponse(collect(), new ImageUsage, new Meta('nested', 'image-model')),
-    ));
+    )));
 
     $failover = collect($recorder->records)->first(static fn (RecordInput $record): bool => $record instanceof AttemptInput);
+    $start = collect($recorder->records)->first(static fn (RecordInput $record): bool => $record instanceof OperationStartInput);
+    $end = collect($recorder->records)->first(static fn (RecordInput $record): bool => $record instanceof SingleOperationInput);
     expect($failover)->toBeInstanceOf(AttemptInput::class)
-        ->and($failover->operation)->toBe(Operation::Audio)
-        ->and($failover->invocationId)->toBe('inner-audio')
+        ->and($failover->operation)->toBeNull()
+        ->and($failover->invocationId)->toBeNull()
         ->and($failover->attempt)->toBeNull()
-        ->and(collect($recorder->records)->filter(static fn (RecordInput $record): bool => $record instanceof SingleOperationInput))->toHaveCount(1);
+        ->and($failover->parent)->toBeNull()
+        ->and($start)->toBeInstanceOf(OperationStartInput::class)
+        ->and($start->parent)->toEqual(new ParentLink('start-parent', 'start-tool'))
+        ->and($end)->toBeInstanceOf(SingleOperationInput::class)
+        ->and($end->parent)->toEqual(new ParentLink('end-parent', 'end-tool'))
+        ->and($end->durationMs)->toBeNull();
 });
 
-it('clears a non-agent operation when terminal usage projection fails', function (): void {
+it('contains a non-agent terminal usage projection failure without contaminating failover', function (): void {
     $events = new Dispatcher;
     $recorder = new LaravelAiCollectingRecorder;
     $driver = new LaravelAiDriver($events);
@@ -457,13 +465,11 @@ it('clears a non-agent operation when terminal usage projection fails', function
         $prompt,
         new EmbeddingsResponse([[]], new SourceUsage(-1, 0), new Meta('failed-terminal', 'embedding-model')),
     )))->not->toThrow(Throwable::class);
-    $operationsAfterFailure = (new ReflectionProperty($driver, 'operations'))->getValue($driver);
     $events->dispatch(new ProviderFailedOver($provider, 'unrelated-model', new ProviderConnectionException('safe')));
 
     $failover = collect($recorder->records)->last(static fn (RecordInput $record): bool => $record instanceof AttemptInput);
 
     expect(collect($recorder->records)->filter(static fn (RecordInput $record): bool => $record instanceof DroppedRecordInput))->toHaveCount(1)
-        ->and($operationsAfterFailure)->toBe([])
         ->and($failover)->toBeInstanceOf(AttemptInput::class)
         ->and($failover->invocationId)->toBeNull()
         ->and($failover->attempt)->toBeNull()
@@ -471,6 +477,58 @@ it('clears a non-agent operation when terminal usage projection fails', function
         ->and($failover->parent)->toBeNull()
         ->and($failover->model?->provider)->toBe('failed-terminal')
         ->and($failover->model?->requested)->toBe('unrelated-model')
+        ->and($failover->failureClass)->toBe(ProviderConnectionException::class);
+});
+
+it('retains no non-agent state across silent failures and keeps generic failover unattributed', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiCollectingRecorder;
+    $driver = new LaravelAiDriver($events);
+    $driver->register($recorder);
+    $manager = new AiManager(app());
+    app()['config']->set('ai.providers.silent-failure', ['driver' => 'openai', 'key' => 'safe']);
+    $provider = $manager->instance('silent-failure');
+    $prompt = new EmbeddingsPrompt(['safe'], 3, $provider, 'embedding-model');
+    $retainedState = static function (LaravelAiDriver $driver): string {
+        $state = [];
+
+        foreach ((new ReflectionObject($driver))->getProperties() as $property) {
+            if (in_array($property->getName(), ['events', 'clock', 'recorder'], true)) {
+                continue;
+            }
+
+            $state[$property->getName()] = $property->getValue($driver);
+        }
+
+        return serialize($state);
+    };
+    $before = $retainedState($driver);
+
+    ParentInvocation::within('stale-parent', 'stale-tool', function () use ($events, $provider, $prompt): void {
+        for ($index = 0; $index < 50; $index++) {
+            $events->dispatch(new GeneratingEmbeddings('silent-'.$index, $provider, 'embedding-model', $prompt));
+        }
+    });
+    $afterStarts = $retainedState($driver);
+    $events->dispatch(new ProviderFailedOver($provider, 'orphan-model', new ProviderConnectionException('safe')));
+    $afterFailover = $retainedState($driver);
+
+    $failover = collect($recorder->records)->last(static fn (RecordInput $record): bool => $record instanceof AttemptInput);
+    $propertyNames = array_map(
+        static fn (ReflectionProperty $property): string => $property->getName(),
+        (new ReflectionObject($driver))->getProperties(),
+    );
+
+    expect($afterStarts)->toBe($before)
+        ->and($afterFailover)->toBe($before)
+        ->and($propertyNames)->not->toContain('operations')
+        ->and($failover)->toBeInstanceOf(AttemptInput::class)
+        ->and($failover->invocationId)->toBeNull()
+        ->and($failover->attempt)->toBeNull()
+        ->and($failover->operation)->toBeNull()
+        ->and($failover->parent)->toBeNull()
+        ->and($failover->model?->provider)->toBe('silent-failure')
+        ->and($failover->model?->requested)->toBe('orphan-model')
         ->and($failover->failureClass)->toBe(ProviderConnectionException::class);
 });
 

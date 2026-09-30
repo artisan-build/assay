@@ -74,9 +74,6 @@ final class LaravelAiDriver implements CaptureDriver
 
     private ?Recorder $recorder = null;
 
-    /** @var list<array{operation: Operation, invocation: string, parent: ParentLink|null, model: ModelInfo, started: int|float}> */
-    private array $operations = [];
-
     /** @var array<string, array<string, Approval>> */
     private array $approvalDecisions = [];
 
@@ -418,31 +415,17 @@ final class LaravelAiDriver implements CaptureDriver
     private function operationStarted(Operation $operation, string $invocationId, string $model, string $provider): void
     {
         [$parentInvocationId, $parentToolInvocationId] = ParentInvocation::current();
-        $active = [
-            'operation' => $operation,
-            'invocation' => $invocationId,
-            'parent' => $this->parent($parentInvocationId, $parentToolInvocationId),
-            'model' => new ModelInfo(requested: $model, provider: $provider),
-            'started' => hrtime(true),
-        ];
-        $this->operations[] = $active;
 
-        try {
-            $this->record(new OperationStartInput(
-                $operation,
-                $invocationId,
-                $this->now(),
-                parent: $active['parent'],
-                capture: CaptureMode::Usage,
-                sampled: false,
-                subject: null,
-                model: $active['model'],
-            ));
-        } catch (Throwable $exception) {
-            $this->removeOperation($operation, $invocationId);
-
-            throw $exception;
-        }
+        $this->record(new OperationStartInput(
+            $operation,
+            $invocationId,
+            $this->now(),
+            parent: $this->parent($parentInvocationId, $parentToolInvocationId),
+            capture: CaptureMode::Usage,
+            sampled: false,
+            subject: null,
+            model: new ModelInfo(requested: $model, provider: $provider),
+        ));
     }
 
     private function operationCompleted(
@@ -454,36 +437,31 @@ final class LaravelAiDriver implements CaptureDriver
         ?string $respondedProvider,
         SourceUsage $usage,
     ): void {
-        $active = $this->removeOperation($operation, $invocationId);
+        [$parentInvocationId, $parentToolInvocationId] = ParentInvocation::current();
 
         $this->record(new SingleOperationInput(
             $operation,
             $invocationId,
             $this->now(),
-            parent: $active['parent'] ?? null,
+            parent: $this->parent($parentInvocationId, $parentToolInvocationId),
             usage: $this->usage($usage),
             model: new ModelInfo(
-                requested: $active['model']->requested ?? $requestedModel,
+                requested: $requestedModel,
                 responded: $respondedModel,
                 provider: $respondedProvider ?? $requestedProvider,
             ),
-            durationMs: isset($active['started']) ? (hrtime(true) - $active['started']) / 1_000_000 : null,
             outcome: Outcome::Completed,
         ));
     }
 
     private function operationFailedOver(ProviderFailedOver $event): void
     {
-        $active = array_pop($this->operations);
-
         $this->record(new AttemptInput(
-            $active['invocation'] ?? null,
+            null,
             null,
             $this->now(),
-            parent: $active['parent'] ?? null,
             model: new ModelInfo(requested: $event->model, provider: $event->provider->name()),
             failureClass: $event->exception::class,
-            operation: $active['operation'] ?? null,
         ));
     }
 
@@ -517,22 +495,6 @@ final class LaravelAiDriver implements CaptureDriver
             $hasProviderOptions ? ReplayInputOmission::ProviderOptions : null,
             $hasReplayState ? ReplayInputOmission::ProviderReplayState : null,
         ]));
-    }
-
-    /** @return array{operation: Operation, invocation: string, parent: ParentLink|null, model: ModelInfo, started: int|float}|null */
-    private function removeOperation(Operation $operation, string $invocationId): ?array
-    {
-        for ($index = count($this->operations) - 1; $index >= 0; $index--) {
-            $active = $this->operations[$index];
-
-            if ($active['operation'] === $operation && $active['invocation'] === $invocationId) {
-                array_splice($this->operations, $index, 1);
-
-                return $active;
-            }
-        }
-
-        return null;
     }
 
     private function usage(SourceUsage $usage): Usage
