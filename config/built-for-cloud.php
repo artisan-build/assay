@@ -15,7 +15,9 @@ return [
         'guard' => env('BUILT_FOR_CLOUD_CREDENTIAL_GUARD', 'bfc'),
         'declaration' => null,
         'session_guard' => null,
-        'app_purposes' => [],
+        'app_purposes' => [
+            'assay.ingest' => 'consumption',
+        ],
     ],
 
     'ui' => [
