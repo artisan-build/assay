@@ -64,7 +64,7 @@ it('passes a source independent fake with all operations metrics failover and li
     $driver = new FakeDriver('fake', $source, static function (Throwable $failure) use (&$receivedCanary): array {
         $receivedCanary = $failure->getMessage();
 
-        return conformanceRecords(failureClass: get_class($failure));
+        return conformanceRecords(failureClass: $failure::class);
     });
     $canary = 'content-canary-must-not-ship';
 
