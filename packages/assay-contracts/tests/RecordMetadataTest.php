@@ -99,7 +99,12 @@ it('accepts every allowed metadata placement', function (array $metadata): void 
     'failed run class' => [['type' => 'run.end', 'outcome' => 'failed', 'failure_class' => 'App\\Exceptions\\Failure']],
     'step failure class' => [['type' => 'step.fail', 'failure_class' => 'App\\Exceptions\\Failure']],
     'failed tool class' => [['type' => 'tool.end', 'outcome' => 'failed', 'failure_class' => 'App\\Exceptions\\Failure']],
-    'failover class' => [['type' => 'run.failover', 'failure_class' => 'App\\Exceptions\\Failure']],
+    'failover class' => [[
+        'type' => 'run.failover',
+        'invocation_id' => 'run-1',
+        'attempt' => 1,
+        'failure_class' => 'App\\Exceptions\\Failure',
+    ]],
 ]);
 
 it('rejects forbidden metadata placements when decoding', function (array $metadata): void {

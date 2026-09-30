@@ -14,7 +14,7 @@ final readonly class RecordV1
         public UuidV7 $recordId,
         public string $source,
         public RecordType $type,
-        public Operation $operation,
+        public ?Operation $operation,
         public Timestamp $at,
         public CaptureMode $capture,
         public bool $sampled,
@@ -58,6 +58,7 @@ final readonly class RecordV1
             throw new InvalidEnvelope('Record content requires full capture.');
         }
 
+        $this->validateAttribution();
         $this->validateMetadata();
     }
 
@@ -65,11 +66,11 @@ final readonly class RecordV1
     public static function fromArray(array $data): self
     {
         $type = RecordType::tryFrom(Shape::string($data, 'type', 'record'));
-        $operation = Operation::tryFrom(Shape::string($data, 'operation', 'record'));
+        $operation = self::operation($data);
         $capture = CaptureMode::tryFrom(Shape::string($data, 'capture', 'record'));
 
-        if ($type === null || $operation === null || $capture === null) {
-            throw new InvalidEnvelope('Record type, operation, or capture mode is unsupported.');
+        if ($type === null || $capture === null) {
+            throw new InvalidEnvelope('Record type or capture mode is unsupported.');
         }
 
         return new self(
@@ -107,7 +108,7 @@ final readonly class RecordV1
             'record_id' => (string) $this->recordId,
             'source' => $this->source,
             'type' => $this->type->value,
-            'operation' => $this->operation->value,
+            'operation' => $this->operation?->value,
             'invocation_id' => $this->invocationId,
             'attempt' => $this->attempt,
             'parent_invocation_id' => $this->parentInvocationId,
@@ -194,6 +195,28 @@ final readonly class RecordV1
         }
     }
 
+    private function validateAttribution(): void
+    {
+        $unattributedFailover = $this->type === RecordType::RunFailover && $this->invocationId === null;
+
+        if (! $unattributedFailover) {
+            if ($this->operation === null) {
+                throw new InvalidEnvelope('Record operation is required.');
+            }
+
+            return;
+        }
+
+        if ($this->operation !== null || $this->attempt !== null || $this->parentInvocationId !== null || $this->parentToolInvocationId !== null) {
+            throw new InvalidEnvelope('Unattributed run.failover must omit operation and invocation metadata.');
+        }
+
+        if ($this->model?->provider === null || $this->model->provider === ''
+            || $this->model->requested === null || $this->model->requested === '') {
+            throw new InvalidEnvelope('Unattributed run.failover requires model provider and requested.');
+        }
+    }
+
     private static function metadataString(string $value, string $field): void
     {
         $length = preg_match_all('/./us', $value);
@@ -207,6 +230,22 @@ final readonly class RecordV1
     private static function finishReason(array $data): ?FinishReason
     {
         return self::enum($data, 'finish_reason', FinishReason::class);
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function operation(array $data): ?Operation
+    {
+        if (! array_key_exists('operation', $data)) {
+            return null;
+        }
+
+        $operation = Operation::tryFrom(Shape::string($data, 'operation', 'record'));
+
+        if ($operation === null) {
+            throw new InvalidEnvelope('Record operation is unsupported.');
+        }
+
+        return $operation;
     }
 
     /** @param array<string, mixed> $data */
