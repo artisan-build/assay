@@ -7,21 +7,26 @@ namespace ArtisanBuild\AssayClient;
 use ArtisanBuild\AssayClient\Internal\DroppedRecordInput;
 use ArtisanBuild\AssayClient\Internal\InvocationState;
 use ArtisanBuild\AssayClient\Records\AttemptInput;
+use ArtisanBuild\AssayClient\Records\OperationStartInput;
 use ArtisanBuild\AssayClient\Records\RunInput;
 use ArtisanBuild\AssayClient\Records\SingleOperationInput;
 use ArtisanBuild\AssayClient\Records\StepInput;
 use ArtisanBuild\AssayClient\Records\ToolCallInput;
 use ArtisanBuild\AssayContracts\Approval;
+use ArtisanBuild\AssayContracts\CaptureMode;
 use ArtisanBuild\AssayContracts\FinishReason;
 use ArtisanBuild\AssayContracts\Operation;
 use ArtisanBuild\AssayContracts\Outcome;
 use ArtisanBuild\AssayContracts\RecordType;
+use ArtisanBuild\AssayContracts\ReplayInputOmission;
 use Closure;
 use Composer\InstalledVersions;
 use DateTimeImmutable;
 use Illuminate\Contracts\Events\Dispatcher;
 use Laravel\Ai\AiServiceProvider;
 use Laravel\Ai\Approvals\Decision;
+use Laravel\Ai\Contracts\HasProviderOptions;
+use Laravel\Ai\Contracts\HasStructuredOutput;
 use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Events\AgentFailed;
 use Laravel\Ai\Events\AgentFailedOver;
@@ -51,6 +56,9 @@ use Laravel\Ai\Events\ToolFailed;
 use Laravel\Ai\Events\ToolInvoked;
 use Laravel\Ai\Events\TranscriptionGenerated;
 use Laravel\Ai\Gateway\ParentInvocation;
+use Laravel\Ai\Messages\AssistantMessage;
+use Laravel\Ai\Messages\UserMessage;
+use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\Data\ImageUsage;
 use Laravel\Ai\Responses\Data\RerankingUsage;
 use Laravel\Ai\Responses\Data\TextUsage;
@@ -69,7 +77,7 @@ final class LaravelAiDriver implements CaptureDriver
     /** @var list<array{operation: Operation, invocation: string, parent: ParentLink|null, model: ModelInfo, started: int|float}> */
     private array $operations = [];
 
-    /** @var array<string, array<string, Decision>> */
+    /** @var array<string, array<string, Approval>> */
     private array $approvalDecisions = [];
 
     /** @param (Closure(): DateTimeImmutable)|null $clock */
@@ -159,63 +167,85 @@ final class LaravelAiDriver implements CaptureDriver
         $decisions = $event->prompt->approvalDecisions?->all();
 
         if ($decisions !== null) {
-            $this->approvalDecisions[$event->invocationId] = $decisions;
+            $this->approvalDecisions[$event->invocationId] = array_map(
+                fn (Decision $decision): Approval => $this->approval($decision->action),
+                $decisions,
+            );
+        } else {
+            unset($this->approvalDecisions[$event->invocationId]);
         }
 
-        $this->record(new RunInput(
-            RecordType::RunStart,
-            $event->invocationId,
-            $attempt,
-            $this->now(),
-            parent: $parent,
-            model: new ModelInfo(requested: $event->prompt->model, provider: $event->prompt->provider()->name()),
-            agent: $event->prompt->agent::class,
-        ));
+        try {
+            $this->invocations->addReplayInputOmissions($event->invocationId, $this->replayInputOmissions($event->prompt));
+            $this->record(new RunInput(
+                RecordType::RunStart,
+                $event->invocationId,
+                $attempt,
+                $this->now(),
+                parent: $parent,
+                model: new ModelInfo(requested: $event->prompt->model, provider: $event->prompt->provider()->name()),
+                agent: $event->prompt->agent::class,
+            ));
+        } catch (Throwable $exception) {
+            $this->invocations->finish($event->invocationId);
+            unset($this->approvalDecisions[$event->invocationId]);
+
+            throw $exception;
+        }
     }
 
     private function agentCompleted(AgentPrompted $event): void
     {
-        $lastStep = $event->response->steps->last();
+        $retainApproval = $event->response->hasPendingApprovals() || $event->prompt->approvalDecisions !== null;
+        $recorded = false;
 
-        $this->record(new RunInput(
-            RecordType::RunEnd,
-            $event->invocationId,
-            $this->invocations->attempt($event->invocationId),
-            $this->now(),
-            parent: $this->invocations->parent($event->invocationId),
-            model: new ModelInfo(
-                requested: $event->prompt->model,
-                responded: $event->response->meta->model,
-                provider: $event->response->meta->provider ?? $event->prompt->provider()->name(),
-            ),
-            agent: $event->prompt->agent::class,
-            finishReason: $lastStep === null ? null : $this->finishReason($lastStep->finishReason->value),
-            outcome: Outcome::Completed,
-        ));
+        try {
+            $lastStep = $event->response->steps->last();
+            $this->record(new RunInput(
+                RecordType::RunEnd,
+                $event->invocationId,
+                $this->invocations->attempt($event->invocationId),
+                $this->now(),
+                parent: $this->invocations->parent($event->invocationId),
+                model: new ModelInfo(
+                    requested: $event->prompt->model,
+                    responded: $event->response->meta->model,
+                    provider: $event->response->meta->provider ?? $event->prompt->provider()->name(),
+                ),
+                agent: $event->prompt->agent::class,
+                finishReason: $lastStep === null ? null : $this->finishReason($lastStep->finishReason->value),
+                outcome: Outcome::Completed,
+                replayInputsOmitted: $this->invocations->replayInputOmissions($event->invocationId),
+            ));
+            $recorded = true;
+        } finally {
+            $this->invocations->finish($event->invocationId, $recorded && $retainApproval);
 
-        $this->invocations->finish($event->invocationId);
-
-        if ($event->prompt->approvalDecisions === null) {
-            unset($this->approvalDecisions[$event->invocationId]);
+            if (! $recorded || $event->prompt->approvalDecisions === null) {
+                unset($this->approvalDecisions[$event->invocationId]);
+            }
         }
     }
 
     private function agentFailed(AgentFailed $event): void
     {
-        $this->record(new RunInput(
-            RecordType::RunEnd,
-            $event->invocationId,
-            $this->invocations->attempt($event->invocationId),
-            $this->now(),
-            parent: $this->invocations->parent($event->invocationId),
-            model: new ModelInfo(requested: $event->prompt->model, provider: $event->prompt->provider()->name()),
-            agent: $event->prompt->agent::class,
-            outcome: Outcome::Failed,
-            failureClass: $event->exception::class,
-        ));
-
-        $this->invocations->finish($event->invocationId);
-        unset($this->approvalDecisions[$event->invocationId]);
+        try {
+            $this->record(new RunInput(
+                RecordType::RunEnd,
+                $event->invocationId,
+                $this->invocations->attempt($event->invocationId),
+                $this->now(),
+                parent: $this->invocations->parent($event->invocationId),
+                model: new ModelInfo(requested: $event->prompt->model, provider: $event->prompt->provider()->name()),
+                agent: $event->prompt->agent::class,
+                outcome: Outcome::Failed,
+                failureClass: $event->exception::class,
+                replayInputsOmitted: $this->invocations->replayInputOmissions($event->invocationId),
+            ));
+        } finally {
+            $this->invocations->finish($event->invocationId);
+            unset($this->approvalDecisions[$event->invocationId]);
+        }
     }
 
     private function agentFailedOver(AgentFailedOver $event): void
@@ -228,6 +258,7 @@ final class LaravelAiDriver implements CaptureDriver
             model: new ModelInfo(requested: $event->model, provider: $event->provider->name()),
             agent: $event->agent::class,
             failureClass: $event->exception::class,
+            operation: Operation::Agent,
         ));
     }
 
@@ -327,58 +358,90 @@ final class LaravelAiDriver implements CaptureDriver
 
     private function approvalRequested(ToolApprovalRequested $event): void
     {
-        foreach ($event->pendingApprovals as $approval) {
-            $this->record(new ToolCallInput(
-                RecordType::ToolApproval,
-                $event->invocationId,
-                $this->invocations->attempt($event->invocationId),
-                $approval->id,
-                $this->now(),
-                parent: $this->invocations->parent($event->invocationId),
-                agent: $event->agent::class,
-                tool: $approval->tool,
-                approval: Approval::Requested,
-            ));
+        $snapshot = $this->invocations->approvalSnapshot($event->invocationId);
+        $recorded = false;
+
+        try {
+            foreach ($event->pendingApprovals as $approval) {
+                $this->record(new ToolCallInput(
+                    RecordType::ToolApproval,
+                    $event->invocationId,
+                    $snapshot['attempt'] ?? $this->invocations->attempt($event->invocationId),
+                    $approval->id,
+                    $this->now(),
+                    parent: $snapshot['parent'] ?? $this->invocations->parent($event->invocationId),
+                    agent: $event->agent::class,
+                    tool: $approval->tool,
+                    approval: Approval::Requested,
+                ));
+            }
+            $recorded = true;
+        } finally {
+            if (! $recorded) {
+                unset($this->approvalDecisions[$event->invocationId]);
+            }
+
+            if (! $recorded || ! isset($this->approvalDecisions[$event->invocationId])) {
+                $this->invocations->finishApproval($event->invocationId);
+            }
         }
     }
 
     private function approvalResolved(ToolApprovalResolved $event): void
     {
-        foreach ($event->toolResults as $result) {
-            $action = $this->approvalDecisions[$event->invocationId][$result->id]->action ?? null;
-            $approval = match ($action) {
-                'approve' => Approval::Approved,
-                'reject' => Approval::Rejected,
-                null => $result->denied ? Approval::Rejected : Approval::Approved,
-                default => Approval::Other,
-            };
+        $snapshot = $this->invocations->approvalSnapshot($event->invocationId);
 
-            $this->record(new ToolCallInput(
-                RecordType::ToolApproval,
-                $event->invocationId,
-                $this->invocations->attempt($event->invocationId),
-                $result->id,
-                $this->now(),
-                parent: $this->invocations->parent($event->invocationId),
-                agent: $event->agent::class,
-                tool: $result->name,
-                approval: $approval,
-            ));
+        try {
+            foreach ($event->toolResults as $result) {
+                $approval = $this->approvalDecisions[$event->invocationId][$result->id]
+                    ?? ($result->denied ? Approval::Rejected : Approval::Approved);
+
+                $this->record(new ToolCallInput(
+                    RecordType::ToolApproval,
+                    $event->invocationId,
+                    $snapshot['attempt'] ?? $this->invocations->attempt($event->invocationId),
+                    $result->id,
+                    $this->now(),
+                    parent: $snapshot['parent'] ?? $this->invocations->parent($event->invocationId),
+                    agent: $event->agent::class,
+                    tool: $result->name,
+                    approval: $approval,
+                ));
+            }
+        } finally {
+            unset($this->approvalDecisions[$event->invocationId]);
+            $this->invocations->finishApproval($event->invocationId);
         }
-
-        unset($this->approvalDecisions[$event->invocationId]);
     }
 
     private function operationStarted(Operation $operation, string $invocationId, string $model, string $provider): void
     {
         [$parentInvocationId, $parentToolInvocationId] = ParentInvocation::current();
-        $this->operations[] = [
+        $active = [
             'operation' => $operation,
             'invocation' => $invocationId,
             'parent' => $this->parent($parentInvocationId, $parentToolInvocationId),
             'model' => new ModelInfo(requested: $model, provider: $provider),
             'started' => hrtime(true),
         ];
+        $this->operations[] = $active;
+
+        try {
+            $this->record(new OperationStartInput(
+                $operation,
+                $invocationId,
+                $this->now(),
+                parent: $active['parent'],
+                capture: CaptureMode::Usage,
+                sampled: false,
+                subject: null,
+                model: $active['model'],
+            ));
+        } catch (Throwable $exception) {
+            $this->removeOperation($operation, $invocationId);
+
+            throw $exception;
+        }
     }
 
     private function operationCompleted(
@@ -396,7 +459,6 @@ final class LaravelAiDriver implements CaptureDriver
             $operation,
             $invocationId,
             $this->now(),
-            attempt: 1,
             parent: $active['parent'] ?? null,
             usage: $usage,
             model: new ModelInfo(
@@ -415,13 +477,45 @@ final class LaravelAiDriver implements CaptureDriver
 
         $this->record(new AttemptInput(
             $active['invocation'] ?? null,
-            $active === null ? null : 1,
+            null,
             $this->now(),
             parent: $active['parent'] ?? null,
             model: new ModelInfo(requested: $event->model, provider: $event->provider->name()),
             failureClass: $event->exception::class,
-            operation: $active['operation'] ?? Operation::Agent,
+            operation: $active['operation'] ?? null,
         ));
+    }
+
+    private function approval(string $action): Approval
+    {
+        return match ($action) {
+            'approve' => Approval::Approved,
+            'reject' => Approval::Rejected,
+            default => Approval::Other,
+        };
+    }
+
+    /** @return list<ReplayInputOmission> */
+    private function replayInputOmissions(AgentPrompt $prompt): array
+    {
+        $messages = $prompt->messages ?? [];
+        $hasAttachments = $prompt->attachments->isNotEmpty();
+        $hasReplayState = false;
+
+        foreach ($messages as $message) {
+            $hasAttachments = $hasAttachments || ($message instanceof UserMessage && $message->attachments->isNotEmpty());
+            $hasReplayState = $hasReplayState || ($message instanceof AssistantMessage && $message->replayBlocks !== []);
+        }
+
+        $hasProviderOptions = $prompt->agent instanceof HasProviderOptions
+            && $prompt->agent->providerOptions($prompt->provider()->name()) !== [];
+
+        return array_values(array_filter([
+            $hasAttachments ? ReplayInputOmission::Attachments : null,
+            $prompt->agent instanceof HasStructuredOutput ? ReplayInputOmission::OutputSchema : null,
+            $hasProviderOptions ? ReplayInputOmission::ProviderOptions : null,
+            $hasReplayState ? ReplayInputOmission::ProviderReplayState : null,
+        ]));
     }
 
     /** @return array{operation: Operation, invocation: string, parent: ParentLink|null, model: ModelInfo, started: int|float}|null */

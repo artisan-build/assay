@@ -10,6 +10,7 @@ use ArtisanBuild\AssayClient\ParentLink;
 use ArtisanBuild\AssayClient\Recorder;
 use ArtisanBuild\AssayClient\RecordInput;
 use ArtisanBuild\AssayClient\Records\AttemptInput;
+use ArtisanBuild\AssayClient\Records\OperationStartInput;
 use ArtisanBuild\AssayClient\Records\RunInput;
 use ArtisanBuild\AssayClient\Records\SingleOperationInput;
 use ArtisanBuild\AssayClient\Records\StepInput;
@@ -25,6 +26,7 @@ use ArtisanBuild\AssayContracts\FinishReason as ContractFinishReason;
 use ArtisanBuild\AssayContracts\Operation;
 use ArtisanBuild\AssayContracts\Outcome;
 use ArtisanBuild\AssayContracts\RecordType;
+use ArtisanBuild\AssayContracts\ReplayInputOmission;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Events\Dispatcher;
 use Laravel\Ai\Agents\SummarizeAgent;
@@ -33,8 +35,12 @@ use Laravel\Ai\AiManager;
 use Laravel\Ai\Approvals\Decision;
 use Laravel\Ai\Approvals\Decisions;
 use Laravel\Ai\Approvals\PendingApproval;
+use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Contracts\HasProviderOptions;
+use Laravel\Ai\Contracts\HasStructuredOutput;
 use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Contracts\Tool;
+use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Events\AgentFailed;
 use Laravel\Ai\Events\AgentFailedOver;
 use Laravel\Ai\Events\AgentPrompted;
@@ -64,6 +70,8 @@ use Laravel\Ai\Exceptions\ProviderConnectionException;
 use Laravel\Ai\Files\Base64Audio;
 use Laravel\Ai\Gateway\ParentInvocation;
 use Laravel\Ai\Gateway\StepResponse;
+use Laravel\Ai\Messages\AssistantMessage;
+use Laravel\Ai\Promptable;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Prompts\AudioPrompt;
 use Laravel\Ai\Prompts\ClassificationPrompt;
@@ -121,6 +129,48 @@ final class LaravelAiNamedTool implements Tool
     {
         return [];
     }
+}
+
+final class LaravelAiReplayAgent implements Agent, HasProviderOptions, HasStructuredOutput
+{
+    use Promptable;
+
+    public function instructions(): string
+    {
+        return 'Safe instructions';
+    }
+
+    public function providerOptions(Lab|string $provider): array
+    {
+        return ['secret' => 'provider-option-canary'];
+    }
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [];
+    }
+}
+
+final class LaravelAiFailingRecorder implements Recorder
+{
+    /** @var list<RecordInput> */
+    public array $records = [];
+
+    public bool $failRunEnd = false;
+
+    public bool $failApproval = false;
+
+    public function record(RecordInput $input): void
+    {
+        if (($this->failRunEnd && $input instanceof RunInput && $input->type === RecordType::RunEnd)
+            || ($this->failApproval && $input instanceof ToolCallInput && $input->type === RecordType::ToolApproval)) {
+            throw new RuntimeException('Injected recorder failure.');
+        }
+
+        $this->records[] = $input;
+    }
+
+    public function flush(): void {}
 }
 
 function laravelAiProvider(Dispatcher $events, string $name): TextProvider
@@ -195,7 +245,7 @@ it('passes DriverConformance with projected v1 agent events', function (): void 
         expectedRecords: [
             new RunInput(RecordType::RunStart, 'run-1', 1, $at, parent: $parent, model: $modelA, agent: $agent::class),
             new StepInput(RecordType::StepEnd, 'run-1', 1, 0, $at, parent: $parent, usage: new Usage(inputTokens: 11, outputTokens: 12, cacheReadInputTokens: 0, reasoningTokens: 5), model: new ModelInfo(requested: 'model-a', responded: 'responded-model', provider: 'primary'), agent: $agent::class, durationMs: 42.5, finishReason: ContractFinishReason::Stop),
-            new AttemptInput('run-1', 1, $at, parent: $parent, model: new ModelInfo(requested: 'model-a', provider: 'primary'), agent: $agent::class, failureClass: ProviderConnectionException::class),
+            new AttemptInput('run-1', 1, $at, operation: Operation::Agent, parent: $parent, model: new ModelInfo(requested: 'model-a', provider: 'primary'), agent: $agent::class, failureClass: ProviderConnectionException::class),
             new RunInput(RecordType::RunStart, 'run-1', 2, $at, parent: $secondParent, model: $modelB, agent: $agent::class),
             new RunInput(RecordType::RunEnd, 'run-1', 2, $at, parent: $secondParent, model: new ModelInfo(requested: 'model-b', responded: 'responded-model', provider: 'primary'), agent: $agent::class, finishReason: ContractFinishReason::Stop, outcome: Outcome::Completed),
         ],
@@ -293,13 +343,25 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
     $events->dispatch(new ProviderFailedOver($provider, 'orphan-model', new ProviderConnectionException($canary)));
 
     $failovers = array_values(array_filter($recorder->records, static fn (RecordInput $record): bool => $record instanceof AttemptInput));
+    $starts = array_values(array_filter($recorder->records, static fn (RecordInput $record): bool => $record instanceof OperationStartInput));
     $operations = array_values(array_filter($recorder->records, static fn (RecordInput $record): bool => $record instanceof SingleOperationInput));
-    expect($failovers)->toHaveCount(2)
+    expect($starts)->toHaveCount(7)
+        ->and($starts[0]->operation)->toBe(Operation::Embeddings)
+        ->and($starts[0]->invocationId)->toBe('emb-a')
+        ->and($starts[0]->parent)->toEqual(new ParentLink('parent-run', 'parent-tool'))
+        ->and($starts[0]->model->requested)->toBe('embedding-model')
+        ->and($starts[0]->model->provider)->toBe('operations')
+        ->and($starts[0]->model->responded)->toBeNull()
+        ->and($failovers)->toHaveCount(2)
         ->and($failovers[0]->operation)->toBe(Operation::Embeddings)
         ->and($failovers[0]->invocationId)->toBe('emb-a')
+        ->and($failovers[0]->attempt)->toBeNull()
         ->and($failovers[0]->parent)->toEqual(new ParentLink('parent-run', 'parent-tool'))
         ->and($failovers[1]->invocationId)->toBeNull()
         ->and($failovers[1]->attempt)->toBeNull()
+        ->and($failovers[1]->operation)->toBeNull()
+        ->and($failovers[1]->parent)->toBeNull()
+        ->and($failovers[1]->model?->requested)->toBe('orphan-model')
         ->and($operations)->toHaveCount(6);
 
     $byOperation = [];
@@ -340,6 +402,227 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
     expect($json)->not->toContain($canary)
         ->and(serialize($queued))->not->toContain($canary)
         ->and($queued)->toBeInstanceOf(ShipEnvelope::class);
+});
+
+it('attributes nested non-agent failover to the most recent active invocation', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiCollectingRecorder;
+    (new LaravelAiDriver($events))->register($recorder);
+    $manager = new AiManager(app());
+    app()['config']->set('ai.providers.nested', ['driver' => 'openai', 'key' => 'safe']);
+    $provider = $manager->instance('nested');
+    $imagePrompt = new ImagePrompt('safe', [], null, null, $provider, 'image-model');
+    $audioPrompt = new AudioPrompt('safe', 'voice', 'format', $provider, 'audio-model');
+
+    $events->dispatch(new GeneratingImage('outer-image', $provider, 'image-model', $imagePrompt));
+    $events->dispatch(new GeneratingAudio('inner-audio', $provider, 'audio-model', $audioPrompt));
+    $events->dispatch(new ProviderFailedOver($provider, 'audio-model', new ProviderConnectionException('safe')));
+    $events->dispatch(new ImageGenerated(
+        'outer-image',
+        $provider,
+        'image-model',
+        $imagePrompt,
+        new ImageResponse(collect(), new ImageUsage, new Meta('nested', 'image-model')),
+    ));
+
+    $failover = collect($recorder->records)->first(static fn (RecordInput $record): bool => $record instanceof AttemptInput);
+    expect($failover)->toBeInstanceOf(AttemptInput::class)
+        ->and($failover->operation)->toBe(Operation::Audio)
+        ->and($failover->invocationId)->toBe('inner-audio')
+        ->and($failover->attempt)->toBeNull()
+        ->and(collect($recorder->records)->filter(static fn (RecordInput $record): bool => $record instanceof SingleOperationInput))->toHaveCount(1);
+});
+
+it('aggregates replay omission presence across attempts without retaining values', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiCollectingRecorder;
+    (new LaravelAiDriver($events))->register($recorder);
+    $provider = laravelAiProvider($events, 'replay');
+    $agent = new LaravelAiReplayAgent;
+    $canary = 'replay-source-canary';
+    $first = new AgentPrompt($agent, 'safe', [$canary], $provider, 'model-a', invocationId: 'replay-run', isFinalAttempt: false);
+    $second = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-b',
+        invocationId: 'replay-run',
+        messages: [new AssistantMessage('safe', replayBlocks: [['secret' => $canary]])],
+    );
+    $response = new AgentResponse('replay-run', 'safe', new TextUsage, new Meta('replay', 'model-b'));
+
+    $events->dispatch(new PromptingAgent('replay-run', $first));
+    $events->dispatch(new AgentFailedOver('replay-run', $agent, $provider, 'model-a', new ProviderConnectionException('safe')));
+    $events->dispatch(new PromptingAgent('replay-run', $second));
+    $events->dispatch(new AgentPrompted('replay-run', $second, $response));
+
+    $plainAgent = new SummarizeAgent;
+    $plainPrompt = new AgentPrompt($plainAgent, 'safe', [], $provider, 'model-c', invocationId: 'complete-replay-run');
+    $events->dispatch(new PromptingAgent('complete-replay-run', $plainPrompt));
+    $events->dispatch(new AgentPrompted(
+        'complete-replay-run',
+        $plainPrompt,
+        new AgentResponse('complete-replay-run', 'safe', new TextUsage, new Meta('replay', 'model-c')),
+    ));
+
+    $ends = collect($recorder->records)
+        ->filter(static fn (RecordInput $record): bool => $record instanceof RunInput && $record->type === RecordType::RunEnd)
+        ->keyBy(static fn (RunInput $record): string => $record->invocationId);
+
+    expect($ends['replay-run']->replayInputsOmitted)->toBe([
+        ReplayInputOmission::Attachments,
+        ReplayInputOmission::OutputSchema,
+        ReplayInputOmission::ProviderOptions,
+        ReplayInputOmission::ProviderReplayState,
+    ])->and($ends['complete-replay-run']->replayInputsOmitted)->toBeNull()
+        ->and(serialize($recorder->records))->not->toContain($canary)
+        ->and(serialize($recorder->records))->not->toContain('provider-option-canary');
+});
+
+it('preserves and prunes approval linkage in terminal-first production order', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiCollectingRecorder;
+    $driver = new LaravelAiDriver($events);
+    $driver->register($recorder);
+    $provider = laravelAiProvider($events, 'approval-order');
+    $agent = new SummarizeAgent;
+    $parent = new ParentLink('approval-parent', 'approval-parent-tool');
+    $requestedFirst = new AgentPrompt($agent, 'safe', [], $provider, 'model-a', invocationId: 'approval-requested', parentInvocationId: $parent->invocationId, parentToolInvocationId: $parent->toolInvocationId, isFinalAttempt: false);
+    $requestedSecond = new AgentPrompt($agent, 'safe', [], $provider, 'model-b', invocationId: 'approval-requested', parentInvocationId: $parent->invocationId, parentToolInvocationId: $parent->toolInvocationId);
+    $requestedResponse = (new AgentResponse('approval-requested', 'safe', new TextUsage, new Meta('approval-order', 'model-b')))
+        ->withPendingApprovals(collect([new PendingApproval('approval-id', 'safe_tool', [], null)]));
+
+    $events->dispatch(new PromptingAgent('approval-requested', $requestedFirst));
+    $events->dispatch(new AgentFailedOver('approval-requested', $agent, $provider, 'model-a', new ProviderConnectionException('safe')));
+    $events->dispatch(new PromptingAgent('approval-requested', $requestedSecond));
+    $events->dispatch(new AgentPrompted('approval-requested', $requestedSecond, $requestedResponse));
+    $events->dispatch(new ToolApprovalRequested('approval-requested', $agent, $requestedResponse->pendingApprovals));
+
+    $resolvedFirst = new AgentPrompt($agent, 'safe', [], $provider, 'model-a', invocationId: 'approval-resolved', parentInvocationId: $parent->invocationId, parentToolInvocationId: $parent->toolInvocationId, isFinalAttempt: false);
+    $resolvedSecond = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-b',
+        invocationId: 'approval-resolved',
+        approvalDecisions: Decisions::from(['approval-id' => Decision::approve()]),
+        parentInvocationId: $parent->invocationId,
+        parentToolInvocationId: $parent->toolInvocationId,
+    );
+
+    $events->dispatch(new PromptingAgent('approval-resolved', $resolvedFirst));
+    $events->dispatch(new AgentFailedOver('approval-resolved', $agent, $provider, 'model-a', new ProviderConnectionException('safe')));
+    $events->dispatch(new PromptingAgent('approval-resolved', $resolvedSecond));
+    $events->dispatch(new AgentPrompted(
+        'approval-resolved',
+        $resolvedSecond,
+        new AgentResponse('approval-resolved', 'safe', new TextUsage, new Meta('approval-order', 'model-b')),
+    ));
+    $events->dispatch(new ToolApprovalResolved('approval-resolved', $agent, collect([
+        new ToolResult('approval-id', 'safe_tool', [], 'safe'),
+    ])));
+
+    $approvals = collect($recorder->records)
+        ->filter(static fn (RecordInput $record): bool => $record instanceof ToolCallInput && $record->type === RecordType::ToolApproval)
+        ->values();
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    $decisions = (new ReflectionProperty($driver, 'approvalDecisions'))->getValue($driver);
+
+    expect($approvals)->toHaveCount(2)
+        ->and($approvals[0]->approval?->value)->toBe('requested')
+        ->and($approvals[1]->approval?->value)->toBe('approved')
+        ->and($approvals[0]->attempt)->toBe(2)
+        ->and($approvals[1]->attempt)->toBe(2)
+        ->and($approvals[0]->parent)->toEqual($parent)
+        ->and($approvals[1]->parent)->toEqual($parent)
+        ->and($invocations->approvalSnapshot('approval-requested'))->toBeNull()
+        ->and($invocations->approvalSnapshot('approval-resolved'))->toBeNull()
+        ->and($decisions)->not->toHaveKeys(['approval-requested', 'approval-resolved']);
+});
+
+it('clears invocation and decision state after projection and recording failures', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiFailingRecorder;
+    $driver = new LaravelAiDriver($events);
+    $driver->register($recorder);
+    $provider = laravelAiProvider($events, 'cleanup');
+    $agent = new SummarizeAgent;
+
+    $projectionPrompt = new AgentPrompt($agent, 'safe', [], $provider, 'model-a', invocationId: 'projection-failure');
+    $events->dispatch(new PromptingAgent('projection-failure', $projectionPrompt));
+    $events->dispatch(new AgentPrompted(
+        'projection-failure',
+        $projectionPrompt,
+        new AgentResponse('projection-failure', 'safe', new TextUsage, new Meta('cleanup', '')),
+    ));
+    $events->dispatch(new PromptingAgent('projection-failure', $projectionPrompt));
+    $events->dispatch(new AgentFailed('projection-failure', $projectionPrompt, new RuntimeException('safe')));
+
+    $decisionPrompt = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-a',
+        invocationId: 'recording-failure',
+        approvalDecisions: Decisions::from(['stale-id' => Decision::approve()]),
+        parentInvocationId: 'stale-parent',
+        parentToolInvocationId: 'stale-tool',
+    );
+    $events->dispatch(new PromptingAgent('recording-failure', $decisionPrompt));
+    $recorder->failRunEnd = true;
+    $events->dispatch(new AgentPrompted(
+        'recording-failure',
+        $decisionPrompt,
+        new AgentResponse('recording-failure', 'safe', new TextUsage, new Meta('cleanup', 'model-a')),
+    ));
+    $recorder->failRunEnd = false;
+
+    $freshParent = new ParentLink('fresh-parent', 'fresh-tool');
+    $freshPrompt = new AgentPrompt($agent, 'safe', [], $provider, 'model-b', invocationId: 'recording-failure', parentInvocationId: $freshParent->invocationId, parentToolInvocationId: $freshParent->toolInvocationId);
+    $freshResponse = (new AgentResponse('recording-failure', 'safe', new TextUsage, new Meta('cleanup', 'model-b')))
+        ->withPendingApprovals(collect([new PendingApproval('stale-id', 'safe_tool', [], null)]));
+    $events->dispatch(new PromptingAgent('recording-failure', $freshPrompt));
+    $events->dispatch(new AgentPrompted('recording-failure', $freshPrompt, $freshResponse));
+    $events->dispatch(new ToolApprovalResolved('recording-failure', $agent, collect([
+        new ToolResult('stale-id', 'safe_tool', [], 'safe', denied: true),
+    ])));
+
+    $approvalFailurePrompt = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-c',
+        invocationId: 'approval-recording-failure',
+        approvalDecisions: Decisions::from(['approval-failure-id' => Decision::approve()]),
+    );
+    $approvalFailureResponse = (new AgentResponse('approval-recording-failure', 'safe', new TextUsage, new Meta('cleanup', 'model-c')))
+        ->withPendingApprovals(collect([new PendingApproval('approval-failure-id', 'safe_tool', [], null)]));
+    $events->dispatch(new PromptingAgent('approval-recording-failure', $approvalFailurePrompt));
+    $events->dispatch(new AgentPrompted('approval-recording-failure', $approvalFailurePrompt, $approvalFailureResponse));
+    $recorder->failApproval = true;
+    $events->dispatch(new ToolApprovalRequested('approval-recording-failure', $agent, $approvalFailureResponse->pendingApprovals));
+    $recorder->failApproval = false;
+
+    $starts = collect($recorder->records)
+        ->filter(static fn (RecordInput $record): bool => $record instanceof RunInput && $record->type === RecordType::RunStart)
+        ->groupBy(static fn (RunInput $record): string => $record->invocationId);
+    $resolved = collect($recorder->records)->last(static fn (RecordInput $record): bool => $record instanceof ToolCallInput && $record->type === RecordType::ToolApproval);
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    $decisions = (new ReflectionProperty($driver, 'approvalDecisions'))->getValue($driver);
+
+    expect($starts['projection-failure']->last()->attempt)->toBe(1)
+        ->and($starts['recording-failure']->last()->attempt)->toBe(1)
+        ->and($resolved)->toBeInstanceOf(ToolCallInput::class)
+        ->and($resolved->approval?->value)->toBe('rejected')
+        ->and($resolved->attempt)->toBe(1)
+        ->and($resolved->parent)->toEqual($freshParent)
+        ->and($invocations->approvalSnapshot('recording-failure'))->toBeNull()
+        ->and($invocations->approvalSnapshot('approval-recording-failure'))->toBeNull()
+        ->and($decisions)->not->toHaveKeys(['recording-failure', 'approval-recording-failure']);
 });
 
 it('projects step tool failure and approval metadata without content', function (): void {
