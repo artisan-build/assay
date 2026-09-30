@@ -130,17 +130,17 @@ final class LaravelAiDriver implements CaptureDriver
         $this->listen(ToolApprovalResolved::class, fn (ToolApprovalResolved $event) => $this->approvalResolved($event));
 
         $this->listen(GeneratingEmbeddings::class, fn (GeneratingEmbeddings $event) => $this->operationStarted(Operation::Embeddings, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(EmbeddingsGenerated::class, fn (EmbeddingsGenerated $event) => $this->operationCompleted(Operation::Embeddings, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(EmbeddingsGenerated::class, fn (EmbeddingsGenerated $event) => $this->operationCompleted(Operation::Embeddings, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(GeneratingImage::class, fn (GeneratingImage $event) => $this->operationStarted(Operation::Image, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(ImageGenerated::class, fn (ImageGenerated $event) => $this->operationCompleted(Operation::Image, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(ImageGenerated::class, fn (ImageGenerated $event) => $this->operationCompleted(Operation::Image, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(GeneratingAudio::class, fn (GeneratingAudio $event) => $this->operationStarted(Operation::Audio, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(AudioGenerated::class, fn (AudioGenerated $event) => $this->operationCompleted(Operation::Audio, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(AudioGenerated::class, fn (AudioGenerated $event) => $this->operationCompleted(Operation::Audio, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(GeneratingTranscription::class, fn (GeneratingTranscription $event) => $this->operationStarted(Operation::Transcription, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(TranscriptionGenerated::class, fn (TranscriptionGenerated $event) => $this->operationCompleted(Operation::Transcription, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(TranscriptionGenerated::class, fn (TranscriptionGenerated $event) => $this->operationCompleted(Operation::Transcription, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(Reranking::class, fn (Reranking $event) => $this->operationStarted(Operation::Reranking, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(Reranked::class, fn (Reranked $event) => $this->operationCompleted(Operation::Reranking, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(Reranked::class, fn (Reranked $event) => $this->operationCompleted(Operation::Reranking, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(Classifying::class, fn (Classifying $event) => $this->operationStarted(Operation::Classification, $event->invocationId, $event->model, $event->provider->name()));
-        $this->listen(Classified::class, fn (Classified $event) => $this->operationCompleted(Operation::Classification, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $this->usage($event->response->usage)));
+        $this->listen(Classified::class, fn (Classified $event) => $this->operationCompleted(Operation::Classification, $event->invocationId, $event->model, $event->provider->name(), $event->response->meta->model, $event->response->meta->provider, $event->response->usage));
         $this->listen(ProviderFailedOver::class, fn (ProviderFailedOver $event) => $this->operationFailedOver($event));
     }
 
@@ -213,6 +213,7 @@ final class LaravelAiDriver implements CaptureDriver
                     provider: $event->response->meta->provider ?? $event->prompt->provider()->name(),
                 ),
                 agent: $event->prompt->agent::class,
+                usage: $this->usage($event->response->usage),
                 finishReason: $lastStep === null ? null : $this->finishReason($lastStep->finishReason->value),
                 outcome: Outcome::Completed,
                 replayInputsOmitted: $this->invocations->replayInputOmissions($event->invocationId),
@@ -451,7 +452,7 @@ final class LaravelAiDriver implements CaptureDriver
         string $requestedProvider,
         ?string $respondedModel,
         ?string $respondedProvider,
-        Usage $usage,
+        SourceUsage $usage,
     ): void {
         $active = $this->removeOperation($operation, $invocationId);
 
@@ -460,7 +461,7 @@ final class LaravelAiDriver implements CaptureDriver
             $invocationId,
             $this->now(),
             parent: $active['parent'] ?? null,
-            usage: $usage,
+            usage: $this->usage($usage),
             model: new ModelInfo(
                 requested: $active['model']->requested ?? $requestedModel,
                 responded: $respondedModel,

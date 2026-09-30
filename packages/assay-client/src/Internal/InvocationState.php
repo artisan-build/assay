@@ -41,7 +41,11 @@ final class InvocationState
     /** @return list<ReplayInputOmission>|null */
     public function replayInputOmissions(string $invocationId): ?array
     {
-        $omissions = array_values($this->replayInputOmissions[$invocationId] ?? []);
+        $observed = $this->replayInputOmissions[$invocationId] ?? [];
+        $omissions = array_values(array_filter(
+            ReplayInputOmission::cases(),
+            static fn (ReplayInputOmission $omission): bool => isset($observed[$omission->value]),
+        ));
 
         return $omissions === [] ? null : $omissions;
     }

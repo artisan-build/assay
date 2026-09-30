@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use ArtisanBuild\AssayClient\Internal\BufferedRecorder;
+use ArtisanBuild\AssayClient\Internal\DroppedRecordInput;
 use ArtisanBuild\AssayClient\Jobs\ShipEnvelope;
 use ArtisanBuild\AssayClient\LaravelAiDriver;
 use ArtisanBuild\AssayClient\ModelInfo;
@@ -190,6 +191,11 @@ it('passes DriverConformance with projected v1 agent events', function (): void 
     $events = new Dispatcher;
     $at = new DateTimeImmutable('2026-09-30T12:00:00.123456+00:00');
     $driver = new LaravelAiDriver($events, static fn (): DateTimeImmutable => $at);
+    $source = $driver->source();
+    expect($source)->toBeInstanceOf(SourceInfo::class);
+    assert($source instanceof SourceInfo);
+    expect($source->package)->toBe('laravel/ai')
+        ->and($source->version)->not->toBeEmpty();
     $provider = laravelAiProvider($events, 'primary');
     $agent = new SummarizeAgent;
     $parent = new ParentLink('parent-invocation', 'parent-tool');
@@ -234,7 +240,7 @@ it('passes DriverConformance with projected v1 agent events', function (): void 
 
     expect(fn () => DriverConformance::assert($driver, new DriverScenario(
         driverName: 'laravel-ai',
-        source: new SourceInfo('laravel/ai', '1.0.0'),
+        source: new SourceInfo('laravel/ai', $source->version),
         exercise: static function (Throwable $failure) use ($events, $firstPrompt, $secondPrompt, $provider, $agent, $stepResponse, $response): void {
             $events->dispatch(new PromptingAgent('run-1', $firstPrompt));
             $events->dispatch(new StepCompleted('run-1', 0, $agent, $provider, 'model-a', false, $stepResponse, 42.5));
@@ -247,7 +253,7 @@ it('passes DriverConformance with projected v1 agent events', function (): void 
             new StepInput(RecordType::StepEnd, 'run-1', 1, 0, $at, parent: $parent, usage: new Usage(inputTokens: 11, outputTokens: 12, cacheReadInputTokens: 0, reasoningTokens: 5), model: new ModelInfo(requested: 'model-a', responded: 'responded-model', provider: 'primary'), agent: $agent::class, durationMs: 42.5, finishReason: ContractFinishReason::Stop),
             new AttemptInput('run-1', 1, $at, operation: Operation::Agent, parent: $parent, model: new ModelInfo(requested: 'model-a', provider: 'primary'), agent: $agent::class, failureClass: ProviderConnectionException::class),
             new RunInput(RecordType::RunStart, 'run-1', 2, $at, parent: $secondParent, model: $modelB, agent: $agent::class),
-            new RunInput(RecordType::RunEnd, 'run-1', 2, $at, parent: $secondParent, model: new ModelInfo(requested: 'model-b', responded: 'responded-model', provider: 'primary'), agent: $agent::class, finishReason: ContractFinishReason::Stop, outcome: Outcome::Completed),
+            new RunInput(RecordType::RunEnd, 'run-1', 2, $at, parent: $secondParent, usage: new Usage(inputTokens: 11, outputTokens: 12, cacheReadInputTokens: 0, reasoningTokens: 5), model: new ModelInfo(requested: 'model-b', responded: 'responded-model', provider: 'primary'), agent: $agent::class, finishReason: ContractFinishReason::Stop, outcome: Outcome::Completed),
         ],
         canary: $canary,
         supportsFailover: true,
@@ -384,7 +390,7 @@ it('projects every non-agent usage shape with parent links and LIFO failover att
     $drops = new InMemoryDropCounter;
     $buffered = new BufferedRecorder(
         'laravel-ai',
-        new SourceInfo('laravel/ai', '1.0.0'),
+        new SourceInfo('laravel/ai', 'test'),
         new Client('artisan-build/assay-client', 'test'),
         'testing',
         null,
@@ -433,6 +439,41 @@ it('attributes nested non-agent failover to the most recent active invocation', 
         ->and(collect($recorder->records)->filter(static fn (RecordInput $record): bool => $record instanceof SingleOperationInput))->toHaveCount(1);
 });
 
+it('clears a non-agent operation when terminal usage projection fails', function (): void {
+    $events = new Dispatcher;
+    $recorder = new LaravelAiCollectingRecorder;
+    $driver = new LaravelAiDriver($events);
+    $driver->register($recorder);
+    $manager = new AiManager(app());
+    app()['config']->set('ai.providers.failed-terminal', ['driver' => 'openai', 'key' => 'safe']);
+    $provider = $manager->instance('failed-terminal');
+    $prompt = new EmbeddingsPrompt(['safe'], 3, $provider, 'embedding-model');
+
+    $events->dispatch(new GeneratingEmbeddings('failed-terminal', $provider, 'embedding-model', $prompt));
+    expect(fn () => $events->dispatch(new EmbeddingsGenerated(
+        'failed-terminal',
+        $provider,
+        'embedding-model',
+        $prompt,
+        new EmbeddingsResponse([[]], new SourceUsage(-1, 0), new Meta('failed-terminal', 'embedding-model')),
+    )))->not->toThrow(Throwable::class);
+    $operationsAfterFailure = (new ReflectionProperty($driver, 'operations'))->getValue($driver);
+    $events->dispatch(new ProviderFailedOver($provider, 'unrelated-model', new ProviderConnectionException('safe')));
+
+    $failover = collect($recorder->records)->last(static fn (RecordInput $record): bool => $record instanceof AttemptInput);
+
+    expect(collect($recorder->records)->filter(static fn (RecordInput $record): bool => $record instanceof DroppedRecordInput))->toHaveCount(1)
+        ->and($operationsAfterFailure)->toBe([])
+        ->and($failover)->toBeInstanceOf(AttemptInput::class)
+        ->and($failover->invocationId)->toBeNull()
+        ->and($failover->attempt)->toBeNull()
+        ->and($failover->operation)->toBeNull()
+        ->and($failover->parent)->toBeNull()
+        ->and($failover->model?->provider)->toBe('failed-terminal')
+        ->and($failover->model?->requested)->toBe('unrelated-model')
+        ->and($failover->failureClass)->toBe(ProviderConnectionException::class);
+});
+
 it('aggregates replay omission presence across attempts without retaining values', function (): void {
     $events = new Dispatcher;
     $recorder = new LaravelAiCollectingRecorder;
@@ -440,15 +481,23 @@ it('aggregates replay omission presence across attempts without retaining values
     $provider = laravelAiProvider($events, 'replay');
     $agent = new LaravelAiReplayAgent;
     $canary = 'replay-source-canary';
-    $first = new AgentPrompt($agent, 'safe', [$canary], $provider, 'model-a', invocationId: 'replay-run', isFinalAttempt: false);
-    $second = new AgentPrompt(
+    $first = new AgentPrompt(
         $agent,
         'safe',
         [],
         $provider,
+        'model-a',
+        invocationId: 'replay-run',
+        isFinalAttempt: false,
+        messages: [new AssistantMessage('safe', replayBlocks: [['secret' => $canary]])],
+    );
+    $second = new AgentPrompt(
+        $agent,
+        'safe',
+        [$canary],
+        $provider,
         'model-b',
         invocationId: 'replay-run',
-        messages: [new AssistantMessage('safe', replayBlocks: [['secret' => $canary]])],
     );
     $response = new AgentResponse('replay-run', 'safe', new TextUsage, new Meta('replay', 'model-b'));
 
@@ -697,7 +746,7 @@ it('silently routes listener projection failures through transport drops', funct
     $drops = new InMemoryDropCounter;
     $buffered = new BufferedRecorder(
         'laravel-ai',
-        new SourceInfo('laravel/ai', '1.0.0'),
+        new SourceInfo('laravel/ai', 'test'),
         new Client('artisan-build/assay-client', 'test'),
         'testing',
         null,
