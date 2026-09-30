@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use ArtisanBuild\AssayContracts\Package;
+use ArtisanBuild\AssayContracts\EnvelopeV1;
 use Composer\InstalledVersions;
 
 it('loads the Assay contracts path package and application identity', function (): void {
@@ -12,5 +12,5 @@ it('loads the Assay contracts path package and application identity', function (
         ->and(config('built-for-cloud.manifest.slug'))->toBe('assay')
         ->and($contractsPath)->toBeString()
         ->and(realpath($contractsPath))->toBe(realpath(base_path('packages/assay-contracts')))
-        ->and(class_exists(Package::class))->toBeTrue();
+        ->and(class_exists(EnvelopeV1::class))->toBeTrue();
 });

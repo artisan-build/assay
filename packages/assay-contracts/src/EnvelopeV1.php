@@ -8,7 +8,7 @@ use ArtisanBuild\AssayContracts\Internal\Shape;
 
 final readonly class EnvelopeV1
 {
-    public const VERSION = 1;
+    public const int VERSION = 1;
 
     /** @var list<Source> */
     public array $sources;
