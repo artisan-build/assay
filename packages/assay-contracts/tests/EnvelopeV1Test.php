@@ -130,6 +130,7 @@ it('round-trips every defined field through canonical JSON', function (): void {
 it('round-trips every record type', function (RecordType $type): void {
     $metadata = match ($type) {
         RecordType::RunEnd, RecordType::ToolEnd => ['outcome' => Outcome::Completed->value],
+        RecordType::RunFailover => ['invocation_id' => 'run-1', 'attempt' => 1],
         RecordType::ToolApproval => ['approval' => Approval::Requested->value],
         default => [],
     };
@@ -137,7 +138,9 @@ it('round-trips every record type', function (RecordType $type): void {
         'records' => [validRecordPayload(['type' => $type->value, ...$metadata])],
     ]));
 
-    expect($decoded->records[0]->type)->toBe($type);
+    expect($decoded->records[0]->type)->toBe($type)
+        ->and($decoded->records[0]->operation)->toBe(Operation::Agent)
+        ->and($decoded->records[0]->toArray()['operation'])->toBe(Operation::Agent->value);
 })->with(RecordType::cases());
 
 it('round-trips every operation', function (Operation $operation): void {
