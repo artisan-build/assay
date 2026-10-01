@@ -9,11 +9,21 @@ use ArtisanBuild\BuiltForCloud\CredentialPurpose;
 use ArtisanBuild\BuiltForCloud\SubjectType;
 use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Route;
 use Tests\Support\EnvelopeFactory;
 
 uses(WithCredentials::class);
+
+it('excludes request forgery protection from only the ingest route', function (): void {
+    $ingest = Route::getRoutes()->match(Request::create('/ingest', 'POST'));
+    $capabilities = Route::getRoutes()->match(Request::create('/capabilities', 'GET'));
+
+    expect($ingest->excludedMiddleware())->toContain(PreventRequestForgery::class)
+        ->and($capabilities->excludedMiddleware())->not->toContain(PreventRequestForgery::class);
+});
 
 it('accepts only an active installation-owned ingest credential and derives app identity from it', function (): void {
     Bus::fake();
