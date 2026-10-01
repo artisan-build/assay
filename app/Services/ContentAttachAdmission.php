@@ -23,6 +23,7 @@ final readonly class ContentAttachAdmission
     public function __construct(
         private ContentPersistence $content,
         private ContentStoreRegistry $stores,
+        private SubjectErasureBarrier $erasureBarrier,
     ) {}
 
     public function rejectMetadataSmuggling(string $appId, string $receivedAt, string $recordId): void
@@ -61,6 +62,20 @@ final readonly class ContentAttachAdmission
         foreach ($pendingIds as $pendingId) {
             $this->processPending((int) $pendingId, CarbonImmutable::parse($asOf));
         }
+    }
+
+    public function rejectPendingForErasedTarget(string $appId, string $targetRecordId): void
+    {
+        DB::table($this->stores->pendingContentAttaches())
+            ->where('app_id', $appId)
+            ->where('target_record_id', $targetRecordId)
+            ->orderBy('id')
+            ->chunkById(max(1, (int) config('assay.content_attach.batch_size', 1_000)), function ($pending): void {
+                foreach ($pending as $row) {
+                    $this->finishReceipt((string) $row->receipt_id, 'erased_subject');
+                    DB::table($this->stores->pendingContentAttaches())->where('id', $row->id)->delete();
+                }
+            });
     }
 
     /** @return array{applied: int, dropped: int} */
@@ -162,6 +177,14 @@ final readonly class ContentAttachAdmission
 
         if ($target->run_id === null || $target->type === RecordType::ContentAttach->value) {
             return 'invalid_target';
+        }
+
+        if (! $this->erasureBarrier->allowsRun(
+            (string) $target->app_id,
+            (string) $target->run_id,
+            CarbonImmutable::parse((string) $attach['at']),
+        )) {
+            return 'erased_subject';
         }
 
         if (DB::table($this->stores->recordContent())->where('record_id', $target->id)->exists()) {

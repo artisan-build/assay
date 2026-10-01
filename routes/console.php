@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('assay:reconcile-stale-runs')->everyMinute()->withoutOverlapping();
 Schedule::command('assay:reconcile-content-attaches')->everyMinute()->withoutOverlapping();
+Schedule::command('assay:retention:prune')->dailyAt('02:00')->withoutOverlapping();
+Schedule::command('assay:queue:prune-residue')->everyMinute()->withoutOverlapping();
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;

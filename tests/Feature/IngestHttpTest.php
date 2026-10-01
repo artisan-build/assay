@@ -108,7 +108,7 @@ it('uses credential-derived app identity when authorizing content attach targets
 });
 
 it('isolates a metadata-smuggled attach without exposing its content or rolling back valid siblings', function (): void {
-    config()->set('assay.queue', 'database');
+    config()->set('assay.queue.connection', 'database');
     $credential = $this->mintCredential([
         'purpose' => CredentialPurpose::Consumption,
         'subject_type' => SubjectType::Installation,

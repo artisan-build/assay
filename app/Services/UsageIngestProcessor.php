@@ -15,6 +15,7 @@ final readonly class UsageIngestProcessor
     public function __construct(
         private ContentPersistence $contentPersistence,
         private ContentAttachAdmission $contentAttaches,
+        private SubjectErasureBarrier $erasureBarrier,
     ) {}
 
     /**
@@ -96,6 +97,12 @@ final readonly class UsageIngestProcessor
 
         if ($record['type'] === 'content.attach') {
             $this->contentAttaches->receive($appId, $receivedAt, $record);
+
+            return;
+        }
+
+        if (! $this->erasureBarrier->allowsRecord($appId, $record)) {
+            $this->contentAttaches->rejectPendingForErasedTarget($appId, (string) $record['record_id']);
 
             return;
         }
