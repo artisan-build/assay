@@ -226,12 +226,12 @@ final class BufferedRecorder implements Recorder
         }
 
         if (array_is_list($value)) {
-            return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
+            return array_map($this->canonicalize(...), $value);
         }
 
         ksort($value, SORT_STRING);
 
-        return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
+        return array_map($this->canonicalize(...), $value);
     }
 
     public function flush(): void

@@ -707,12 +707,12 @@ final class LaravelAiDriver implements CaptureDriver
         }
 
         if (array_is_list($value)) {
-            return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
+            return array_map($this->canonicalize(...), $value);
         }
 
         ksort($value, SORT_STRING);
 
-        return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
+        return array_map($this->canonicalize(...), $value);
     }
 
     private function isPlainJson(mixed $value): bool

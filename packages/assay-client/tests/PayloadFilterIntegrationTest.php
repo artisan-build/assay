@@ -40,9 +40,9 @@ it('resolves the released filter for every record and restores all protected fie
     $dispatcher = new CollectingDispatcher;
     $recorder = filteredRecorder($container, $drops, $dispatcher);
     $observed = (object) ['value' => []];
-    $container->instance(PayloadFilter::class, new class($observed) implements PayloadFilter
+    $container->instance(PayloadFilter::class, new readonly class($observed) implements PayloadFilter
     {
-        public function __construct(private readonly stdClass $observed) {}
+        public function __construct(private stdClass $observed) {}
 
         public function filter(OutboundPayload $payload): OutboundPayload
         {
@@ -83,9 +83,9 @@ it('observes a filter rebind after recording has started', function (): void {
     $container = new Container;
     $dispatcher = new CollectingDispatcher;
     $recorder = filteredRecorder($container, new InMemoryDropCounter, $dispatcher);
-    $filter = static fn (string $instructions): PayloadFilter => new class($instructions) implements PayloadFilter
+    $filter = static fn (string $instructions): PayloadFilter => new readonly class($instructions) implements PayloadFilter
     {
-        public function __construct(private readonly string $instructions) {}
+        public function __construct(private string $instructions) {}
 
         public function filter(OutboundPayload $payload): OutboundPayload
         {
@@ -128,9 +128,9 @@ it('silently drops null and throwing hook results exactly once', function (strin
     $container = new Container;
     $drops = new InMemoryDropCounter;
     $dispatcher = new CollectingDispatcher;
-    $container->instance(PayloadFilter::class, new class($behavior) implements PayloadFilter
+    $container->instance(PayloadFilter::class, new readonly class($behavior) implements PayloadFilter
     {
-        public function __construct(private readonly string $behavior) {}
+        public function __construct(private string $behavior) {}
 
         public function filter(OutboundPayload $payload): ?OutboundPayload
         {

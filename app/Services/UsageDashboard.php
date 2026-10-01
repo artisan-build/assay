@@ -734,7 +734,7 @@ final class UsageDashboard
             $content = DB::table('assay_record_content as content')
                 ->join('assay_records as record', 'record.id', '=', 'content.record_id')
                 ->where('content.run_id', $row['run_id'])
-                ->orderBy('record.occurred_at')
+                ->oldest('record.occurred_at')
                 ->orderBy('record.id')
                 ->get(['record.type', 'content.content'])
                 ->map(static fn (stdClass $item): array => [

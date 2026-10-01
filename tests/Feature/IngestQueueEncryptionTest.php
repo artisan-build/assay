@@ -58,7 +58,7 @@ it('encrypts full content in database queue and failure payloads', function (): 
     }
 
     /** @var FailedJobProviderInterface $failedJobs */
-    $failedJobs = app('queue.failer');
+    $failedJobs = resolve('queue.failer');
     $failedJobs->log('database', 'encrypted-ingest', $payload, new RuntimeException('forced failure'));
     $failedPayload = (string) DB::table('failed_jobs')->sole()->payload;
 
