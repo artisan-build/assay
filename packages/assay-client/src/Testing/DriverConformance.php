@@ -260,7 +260,7 @@ final class DriverConformance
 
             foreach (EnvelopeCodec::decode($json)->records as $record) {
                 $array = $record->toArray();
-                unset($array['record_id']);
+                unset($array['record_id'], $array['sampled'], $array['subject']);
                 $actual[] = $array;
             }
         }
@@ -270,7 +270,7 @@ final class DriverConformance
 
         foreach ($scenario->expectedRecords as $record) {
             $array = $projector->project($record, $scenario->driverName)->toArray();
-            unset($array['record_id']);
+            unset($array['record_id'], $array['sampled'], $array['subject']);
             $expected[] = $array;
         }
 

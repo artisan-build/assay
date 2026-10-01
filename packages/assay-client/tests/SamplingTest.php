@@ -351,7 +351,16 @@ it('counts encoded multibyte content bytes and evicts the oldest content first',
 
     $recorder->flush();
     expect(implode('', array_column($dispatcher->dispatched, 'json')))->not->toContain($oldest, $newest);
-    $recorder->record(fullRunEnd('truncated', Outcome::Failed, content: new Content(['exception_message' => 'failed'])));
+    $recorder->record(new StepInput(
+        RecordType::StepFail,
+        'truncated',
+        1,
+        2,
+        new DateTimeImmutable,
+        capture: CaptureMode::Full,
+        failureClass: RuntimeException::class,
+    ));
+    $recorder->record(fullRunEnd('truncated', Outcome::Failed));
     $recorder->flush();
 
     $records = collect(dispatchedSamplingRecords($dispatcher));
@@ -384,8 +393,17 @@ it('never applies failure capture to standalone non-agent operations or when dis
 
     $states = (new ReflectionProperty($recorder, 'rootStates'))->getValue($recorder);
     expect($dispatcher->dispatched[0]['json'])->not->toContain('never buffered')
-        ->and($states)->toBe([])
+        ->and($states['lost-operation']['buffer'])->toBe([])
         ->and(dispatchedSamplingRecords($dispatcher)[0]->capture)->toBe(CaptureMode::Usage);
+    $recorder->record(new SingleOperationInput(
+        Operation::Embeddings,
+        'lost-operation',
+        new DateTimeImmutable,
+        outcome: Outcome::Completed,
+        capture: CaptureMode::Full,
+    ));
+    expect((new ReflectionProperty($recorder, 'rootStates'))->getValue($recorder))->toBe([])
+        ->and((new ReflectionProperty($recorder, 'invocationRoots'))->getValue($recorder))->toBe([]);
 
     $disabledDispatcher = new CollectingDispatcher;
     $disabled = samplingRecorder($disabledDispatcher, sampleRate: 0.0, alwaysOnFailure: false);
@@ -416,4 +434,25 @@ it('prunes all root state across successful failed and reused invocations in a l
         ->and((new ReflectionProperty($recorder, 'invocationRoots'))->getValue($recorder))->toBe([])
         ->and((new ReflectionProperty($recorder, 'sentMessageHashes'))->getValue($recorder))->toBe([])
         ->and($sampler->rates)->toHaveCount(100);
+});
+
+it('prunes root state when the payload hook throws on a terminal record', function (): void {
+    $dispatcher = new CollectingDispatcher;
+    $recorder = samplingRecorder($dispatcher, sampleRate: 0.0, filter: new class implements PayloadFilter
+    {
+        public function filter(OutboundPayload $payload): OutboundPayload
+        {
+            if (($payload->data['type'] ?? null) === RecordType::RunEnd->value) {
+                throw new RuntimeException('Injected hook failure.');
+            }
+
+            return $payload;
+        }
+    });
+    $recorder->record(fullRunStart('hook-failure', 'App\\Ai\\Agent', content: new Content(['instructions' => 'discarded'])));
+    $recorder->record(fullRunEnd('hook-failure', Outcome::Completed));
+
+    expect((new ReflectionProperty($recorder, 'rootStates'))->getValue($recorder))->toBe([])
+        ->and((new ReflectionProperty($recorder, 'invocationRoots'))->getValue($recorder))->toBe([])
+        ->and((new ReflectionProperty($recorder, 'retainedTreeContexts'))->getValue($recorder))->toBe([]);
 });

@@ -223,9 +223,8 @@ final readonly class RecordV1
             && ($this->type !== RecordType::RunEnd
                 || $this->operation !== Operation::Agent
                 || $this->outcome !== Outcome::Failed
-                || $this->sampled
-                || $this->capture !== CaptureMode::Full)) {
-            throw new InvalidEnvelope('Record failure_capture requires an unsampled failed agent run.end in full capture mode.');
+                || $this->sampled !== false)) {
+            throw new InvalidEnvelope('Record failure_capture requires an unsampled failed agent run.end.');
         }
 
         if ($this->replayInputsOmitted !== null
