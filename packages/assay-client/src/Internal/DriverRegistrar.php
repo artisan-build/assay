@@ -54,6 +54,9 @@ final readonly class DriverRegistrar
                 alwaysOnFailure: (bool) config('assay.always_on_failure'),
                 failureBufferBytes: (int) config('assay.failure_buffer_bytes'),
                 subjectContextKey: (string) config('assay.subject_context_key'),
+                maxRetainedRoots: (int) config('assay.max_retained_roots'),
+                maxRetainedBufferBytes: (int) config('assay.max_retained_buffer_bytes'),
+                retainedStateTtlSeconds: (int) config('assay.retained_state_ttl_seconds'),
             ));
         } catch (Throwable) {
             try {

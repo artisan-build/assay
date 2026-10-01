@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use ArtisanBuild\AssayClient\Contracts\DropCounter;
 use ArtisanBuild\AssayClient\Internal\BufferedRecorder;
 use ArtisanBuild\AssayClient\ModelInfo;
 use ArtisanBuild\AssayClient\ParentLink;
@@ -50,6 +51,11 @@ function samplingRecorder(
     bool $alwaysOnFailure = true,
     int $failureBufferBytes = 524_288,
     ?PayloadFilter $filter = null,
+    int $maxRetainedRoots = 128,
+    int $maxRetainedBufferBytes = 67_108_864,
+    int $retainedStateTtlSeconds = 60,
+    ?Closure $clock = null,
+    ?DropCounter $drops = null,
 ): BufferedRecorder {
     $container = new Container;
     $container->instance(PayloadFilter::class, $filter ?? new class implements PayloadFilter
@@ -68,7 +74,7 @@ function samplingRecorder(
         deploy: null,
         batchSize: 500,
         retryForSeconds: 3600,
-        drops: new InMemoryDropCounter,
+        drops: $drops ?? new InMemoryDropCounter,
         dispatcher: $dispatcher,
         app: $container,
         sampler: $sampler,
@@ -76,6 +82,10 @@ function samplingRecorder(
         agentSampleRates: $agentSampleRates,
         alwaysOnFailure: $alwaysOnFailure,
         failureBufferBytes: $failureBufferBytes,
+        maxRetainedRoots: $maxRetainedRoots,
+        maxRetainedBufferBytes: $maxRetainedBufferBytes,
+        retainedStateTtlSeconds: $retainedStateTtlSeconds,
+        clock: $clock,
     );
 }
 
@@ -119,6 +129,17 @@ function fullRunEnd(string $invocationId, Outcome $outcome, ?ParentLink $parent 
         failureClass: $outcome === Outcome::Failed ? RuntimeException::class : null,
         content: $content,
     );
+}
+
+function retainSamplingRoot(BufferedRecorder $recorder, string $invocationId, string $content, Closure $onForcedRelease): void
+{
+    $recorder->retainTreeContext($invocationId, $onForcedRelease);
+    $recorder->record(fullRunStart(
+        $invocationId,
+        'App\\Ai\\Agent',
+        content: new Content(['instructions' => $content]),
+    ));
+    $recorder->record(fullRunEnd($invocationId, Outcome::Completed));
 }
 
 beforeEach(function (): void {
@@ -474,3 +495,114 @@ it('prunes root state when the payload hook throws on a terminal record', functi
         ->and((new ReflectionProperty($recorder, 'invocationRoots'))->getValue($recorder))->toBe([])
         ->and((new ReflectionProperty($recorder, 'retainedTreeContexts'))->getValue($recorder))->toBe([]);
 });
+
+it('evicts retained buffered content oldest first until the aggregate byte bound holds', function (): void {
+    $bytes = strlen(json_encode(
+        ['content' => ['instructions' => 'aaa']],
+        JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES,
+    ));
+    $dispatcher = new CollectingDispatcher;
+    $drops = new InMemoryDropCounter;
+    $released = [];
+    $recorder = samplingRecorder(
+        $dispatcher,
+        sampleRate: 0.0,
+        maxRetainedBufferBytes: $bytes * 2,
+        drops: $drops,
+    );
+
+    foreach (['oldest' => 'aaa', 'middle' => 'bbb', 'newest' => 'ccc'] as $invocationId => $content) {
+        retainSamplingRoot(
+            $recorder,
+            $invocationId,
+            $content,
+            function () use (&$released, $invocationId): void {
+                $released[] = $invocationId;
+            },
+        );
+    }
+
+    $states = (new ReflectionProperty($recorder, 'rootStates'))->getValue($recorder);
+    $roots = (new ReflectionProperty($recorder, 'invocationRoots'))->getValue($recorder);
+    $retained = (new ReflectionProperty($recorder, 'retainedTreeContexts'))->getValue($recorder);
+    $retainedRoots = (new ReflectionProperty($recorder, 'retainedRoots'))->getValue($recorder);
+
+    expect($released)->toBe(['oldest'])
+        ->and($drops->transportTotal())->toBe(1)
+        ->and(array_keys($states))->toBe(['middle', 'newest'])
+        ->and(array_sum(array_column($states, 'bytes')))->toBeLessThanOrEqual($bytes * 2)
+        ->and(array_keys($roots))->toBe(['middle', 'newest'])
+        ->and(array_keys($retained))->toBe(['middle', 'newest'])
+        ->and(array_keys($retainedRoots))->toBe(['middle', 'newest']);
+
+    $recorder->flush();
+    expect(collect(dispatchedSamplingRecords($dispatcher))
+        ->where('type', RecordType::ContentAttach))->toBeEmpty();
+});
+
+it('contains drop counter failures during retained count eviction and ttl expiry', function (): void {
+    $drops = new class implements DropCounter
+    {
+        public function transportTotal(): int
+        {
+            return 0;
+        }
+
+        public function hookTotal(): int
+        {
+            return 0;
+        }
+
+        public function incrementTransport(): int
+        {
+            throw new RuntimeException('Injected counter failure.');
+        }
+
+        public function incrementHook(): int
+        {
+            return 0;
+        }
+    };
+    $released = [];
+    $countRecorder = samplingRecorder(
+        new CollectingDispatcher,
+        sampleRate: 0.0,
+        maxRetainedRoots: 1,
+        drops: $drops,
+    );
+    retainSamplingRoot($countRecorder, 'count-oldest', 'aaa', function () use (&$released): void {
+        $released[] = 'count-oldest';
+    });
+    retainSamplingRoot($countRecorder, 'count-newest', 'bbb', static function (): void {});
+
+    $now = new DateTimeImmutable('2026-10-01T12:00:00+00:00');
+    $clock = static function () use (&$now): DateTimeImmutable {
+        return $now;
+    };
+    $ttlRecorder = samplingRecorder(
+        new CollectingDispatcher,
+        sampleRate: 0.0,
+        retainedStateTtlSeconds: 60,
+        clock: $clock,
+        drops: $drops,
+    );
+    retainSamplingRoot($ttlRecorder, 'expired', 'ccc', function () use (&$released): void {
+        $released[] = 'expired';
+    });
+    $now = $now->modify('+60 seconds');
+    $ttlRecorder->sweepTreeContexts();
+
+    expect($released)->toBe(['count-oldest', 'expired'])
+        ->and(array_keys((new ReflectionProperty($countRecorder, 'rootStates'))->getValue($countRecorder)))->toBe(['count-newest'])
+        ->and((new ReflectionProperty($ttlRecorder, 'rootStates'))->getValue($ttlRecorder))->toBe([])
+        ->and((new ReflectionProperty($ttlRecorder, 'retainedRoots'))->getValue($ttlRecorder))->toBe([]);
+});
+
+it('rejects non-positive retained lifecycle bounds at construction', function (Closure $construct): void {
+    expect(fn () => $construct(new CollectingDispatcher))
+        ->toThrow(InvalidArgumentException::class, 'must be positive');
+})->with([
+    'maximum retained roots' => fn (CollectingDispatcher $dispatcher): BufferedRecorder => samplingRecorder($dispatcher, maxRetainedRoots: 0),
+    'maximum retained buffer bytes' => fn (CollectingDispatcher $dispatcher): BufferedRecorder => samplingRecorder($dispatcher, maxRetainedBufferBytes: 0),
+    'retained state ttl' => fn (CollectingDispatcher $dispatcher): BufferedRecorder => samplingRecorder($dispatcher, retainedStateTtlSeconds: 0),
+]);

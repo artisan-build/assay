@@ -93,8 +93,11 @@ final class AssayClientServiceProvider extends ServiceProvider
         if ($batchSize < 1
             || (int) config('assay.retry_for_seconds') < 1
             || (int) config('assay.max_batch_bytes') < 1
-            || (int) config('assay.failure_buffer_bytes') < 1) {
-            throw new InvalidArgumentException('Assay batch size, retry bound, maximum batch bytes, and failure buffer bytes must be positive.');
+            || (int) config('assay.failure_buffer_bytes') < 1
+            || (int) config('assay.max_retained_roots') < 1
+            || (int) config('assay.max_retained_buffer_bytes') < 1
+            || (int) config('assay.retained_state_ttl_seconds') < 1) {
+            throw new InvalidArgumentException('Assay batch size, retry bound, buffer bounds, and retained lifecycle bounds must be positive.');
         }
 
         if (! is_numeric($sampleRate) || ! is_finite((float) $sampleRate) || (float) $sampleRate < 0.0 || (float) $sampleRate > 1.0) {

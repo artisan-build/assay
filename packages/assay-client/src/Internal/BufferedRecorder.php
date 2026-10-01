@@ -26,6 +26,7 @@ use ArtisanBuild\AssayContracts\UuidV7;
 use ArtisanBuild\BuiltForCloudContracts\OutboundPayload;
 use ArtisanBuild\BuiltForCloudContracts\PayloadDisposition;
 use ArtisanBuild\BuiltForCloudContracts\PayloadFilter;
+use Closure;
 use DateTimeImmutable;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\Context;
@@ -47,10 +48,15 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
     /** @var array<string, array{sampled: bool, subject: string, agent_tree: bool, failed: bool, truncated: bool, bytes: int, buffer: array<string, array{target_record_id: UuidV7, invocation_id: string, content: Content, bytes: int}>}> */
     private array $rootStates = [];
 
-    /** @var array<string, true> */
+    /** @var array<string, Closure|null> */
     private array $retainedTreeContexts = [];
 
+    /** @var array<string, array{terminal_at: DateTimeImmutable, invocations: array<string, true>}> */
+    private array $retainedRoots = [];
+
     private readonly Sampler $sampler;
+
+    private readonly Closure $clock;
 
     /** @var array<string, float> */
     private readonly array $agentSampleRates;
@@ -75,8 +81,13 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
         private readonly bool $alwaysOnFailure = true,
         private readonly int $failureBufferBytes = 524_288,
         private readonly string $subjectContextKey = 'assay.subject',
+        private readonly int $maxRetainedRoots = 128,
+        private readonly int $maxRetainedBufferBytes = 67_108_864,
+        private readonly int $retainedStateTtlSeconds = 60,
+        ?Closure $clock = null,
     ) {
         $this->sampler = $sampler ?? new RandomSampler;
+        $this->clock = $clock ?? static fn (): DateTimeImmutable => new DateTimeImmutable;
         $normalizedAgentRates = [];
 
         foreach ($agentSampleRates as $agent => $rate) {
@@ -89,8 +100,14 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
             throw new InvalidArgumentException('Driver and environment must be non-empty.');
         }
 
-        if ($this->batchSize < 1 || $this->retryForSeconds < 1 || $this->maxBatchBytes < 1 || $this->failureBufferBytes < 1) {
-            throw new InvalidArgumentException('Batch size, retry bound, maximum batch bytes, and failure buffer bytes must be positive.');
+        if ($this->batchSize < 1
+            || $this->retryForSeconds < 1
+            || $this->maxBatchBytes < 1
+            || $this->failureBufferBytes < 1
+            || $this->maxRetainedRoots < 1
+            || $this->maxRetainedBufferBytes < 1
+            || $this->retainedStateTtlSeconds < 1) {
+            throw new InvalidArgumentException('Batch size, retry bound, buffer bounds, and retained lifecycle bounds must be positive.');
         }
 
         if ($this->batchSize > 500) {
@@ -118,8 +135,9 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
         $retainContext = false;
 
         try {
+            $this->sweepTreeContexts();
             $projected = $this->projector->project($input, $this->driver);
-            $retainContext = $projected->invocationId !== null && isset($this->retainedTreeContexts[$projected->invocationId]);
+            $retainContext = $projected->invocationId !== null && array_key_exists($projected->invocationId, $this->retainedTreeContexts);
             [$projected, $root] = $this->applyTreeContext($projected);
             $failure = $this->isFailureTrigger($projected);
 
@@ -211,13 +229,15 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
         }
     }
 
-    public function retainTreeContext(string $invocationId): void
+    public function retainTreeContext(string $invocationId, ?Closure $onForcedRelease = null): void
     {
-        $this->retainedTreeContexts[$invocationId] = true;
+        $this->sweepTreeContexts();
+        $this->retainedTreeContexts[$invocationId] = $onForcedRelease;
     }
 
     public function releaseTreeContext(string $invocationId): void
     {
+        $this->sweepTreeContexts();
         unset($this->retainedTreeContexts[$invocationId]);
         $root = $this->invocationRoots[$invocationId] ?? null;
 
@@ -225,10 +245,29 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
             return;
         }
 
+        if (isset($this->retainedRoots[$root])) {
+            unset($this->retainedRoots[$root]['invocations'][$invocationId]);
+
+            if ($this->retainedRoots[$root]['invocations'] === []) {
+                unset($this->retainedRoots[$root]);
+            }
+        }
+
         if ($invocationId === $root) {
             $this->pruneRoot($root);
         } else {
             unset($this->invocationRoots[$invocationId], $this->sentMessageHashes[$invocationId]);
+        }
+    }
+
+    public function sweepTreeContexts(): void
+    {
+        $expiresAt = $this->now()->getTimestamp() - $this->retainedStateTtlSeconds;
+
+        foreach ($this->retainedRoots as $root => $retained) {
+            if ($retained['terminal_at']->getTimestamp() <= $expiresAt) {
+                $this->evictRetainedRoot($root);
+            }
         }
     }
 
@@ -342,6 +381,10 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
         }
 
         $this->rootStates[$root] = $state;
+
+        if (isset($this->retainedRoots[$root])) {
+            $this->enforceRetainedBounds();
+        }
     }
 
     private function flushFailureBuffer(string $root): void
@@ -387,7 +430,13 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
             return;
         }
 
-        if ($record->type !== RecordType::RunEnd || $retainContext) {
+        if ($record->type !== RecordType::RunEnd) {
+            return;
+        }
+
+        if ($retainContext) {
+            $this->retainRoot($root, $record->invocationId);
+
             return;
         }
 
@@ -402,12 +451,76 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
     {
         foreach ($this->invocationRoots as $invocationId => $candidate) {
             if ($candidate === $root) {
-                unset($this->invocationRoots[$invocationId], $this->sentMessageHashes[$invocationId]);
+                unset(
+                    $this->invocationRoots[$invocationId],
+                    $this->sentMessageHashes[$invocationId],
+                    $this->retainedTreeContexts[$invocationId],
+                );
             }
         }
 
-        unset($this->rootStates[$root]);
-        unset($this->retainedTreeContexts[$root]);
+        foreach ($this->retainedRoots[$root]['invocations'] ?? [] as $invocationId => $_) {
+            unset($this->retainedTreeContexts[$invocationId]);
+        }
+
+        unset($this->rootStates[$root], $this->retainedTreeContexts[$root], $this->retainedRoots[$root]);
+    }
+
+    private function retainRoot(string $root, string $invocationId): void
+    {
+        if (! isset($this->retainedRoots[$root])) {
+            $this->retainedRoots[$root] = [
+                'terminal_at' => $this->now(),
+                'invocations' => [],
+            ];
+        }
+
+        $this->retainedRoots[$root]['invocations'][$invocationId] = true;
+        $this->enforceRetainedBounds();
+    }
+
+    private function enforceRetainedBounds(): void
+    {
+        while (count($this->retainedRoots) > $this->maxRetainedRoots
+            || $this->retainedBufferBytes() > $this->maxRetainedBufferBytes) {
+            $oldest = array_key_first($this->retainedRoots);
+
+            if ($oldest === null) {
+                return;
+            }
+
+            $this->evictRetainedRoot($oldest);
+        }
+    }
+
+    private function retainedBufferBytes(): int
+    {
+        $bytes = 0;
+
+        foreach ($this->retainedRoots as $root => $_) {
+            $bytes += $this->rootStates[$root]['bytes'] ?? 0;
+        }
+
+        return $bytes;
+    }
+
+    private function evictRetainedRoot(string $root): void
+    {
+        foreach ($this->retainedRoots[$root]['invocations'] ?? [] as $invocationId => $_) {
+            try {
+                ($this->retainedTreeContexts[$invocationId] ?? null)?->__invoke();
+            } catch (Throwable) {
+                // Lifecycle cleanup continues even when a collaborator fails.
+            }
+        }
+
+        $this->pruneRoot($root);
+        $this->incrementTransportSafely();
+    }
+
+    private function now(): DateTimeImmutable
+    {
+        return ($this->clock)();
     }
 
     private function copy(
@@ -609,6 +722,8 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
 
     public function flush(): void
     {
+        $this->sweepTreeContexts();
+
         if ($this->records === []) {
             return;
         }

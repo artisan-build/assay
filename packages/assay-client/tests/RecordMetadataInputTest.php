@@ -193,6 +193,29 @@ it('rejects missing required input metadata', function (Closure $construct): voi
     'operation outcome' => fn () => new SingleOperationInput(Operation::Image, 'image-1', new DateTimeImmutable),
 ]);
 
+it('accepts failure capture only for an explicitly unsampled run', function (): void {
+    $input = new RunInput(
+        RecordType::RunEnd,
+        'run-1',
+        1,
+        new DateTimeImmutable,
+        sampled: false,
+        outcome: Outcome::Failed,
+        failureCapture: FailureCapture::Complete,
+    );
+
+    expect($input->failureCapture)->toBe(FailureCapture::Complete)
+        ->and(fn () => new RunInput(
+            RecordType::RunEnd,
+            'run-2',
+            1,
+            new DateTimeImmutable,
+            sampled: null,
+            outcome: Outcome::Failed,
+            failureCapture: FailureCapture::Complete,
+        ))->toThrow(TypeError::class);
+});
+
 it('rejects inapplicable or unsafe input metadata early', function (Closure $construct): void {
     expect($construct)->toThrow(InvalidArgumentException::class);
 })->with([

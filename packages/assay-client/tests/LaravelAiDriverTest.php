@@ -222,10 +222,10 @@ final class LaravelAiLifecycleRecorder implements Recorder, TreeLifecycleRecorde
         $this->recorder->flush();
     }
 
-    public function retainTreeContext(string $invocationId): void
+    public function retainTreeContext(string $invocationId, ?Closure $onForcedRelease = null): void
     {
         $this->retained[] = $invocationId;
-        $this->recorder->retainTreeContext($invocationId);
+        $this->recorder->retainTreeContext($invocationId, $onForcedRelease);
     }
 
     public function releaseTreeContext(string $invocationId): void
@@ -233,11 +233,17 @@ final class LaravelAiLifecycleRecorder implements Recorder, TreeLifecycleRecorde
         $this->released[] = $invocationId;
         $this->recorder->releaseTreeContext($invocationId);
     }
+
+    public function sweepTreeContexts(): void
+    {
+        $this->recorder->sweepTreeContexts();
+    }
 }
 
 function laravelAiProvider(Dispatcher $events, string $name): TextProvider
 {
     $manager = new AiManager(app());
+    app()->instance(AiManager::class, $manager);
     app()['config']->set("ai.providers.{$name}", [
         'driver' => 'openai',
         'name' => $name,
@@ -246,6 +252,39 @@ function laravelAiProvider(Dispatcher $events, string $name): TextProvider
     ]);
 
     return $manager->textProvider($name);
+}
+
+function retainLaravelAiApprovalLifecycle(
+    Dispatcher $events,
+    TextProvider $provider,
+    SummarizeAgent $agent,
+    string $invocationId,
+): void {
+    $prompt = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-a',
+        invocationId: $invocationId,
+        approvalDecisions: Decisions::from(['approval-id' => Decision::approve()]),
+    );
+    $events->dispatch(new PromptingAgent($invocationId, $prompt));
+    $events->dispatch(new StartingStep(
+        $invocationId,
+        0,
+        $agent,
+        $provider,
+        'model-a',
+        true,
+        [new UserMessage('private-'.$invocationId)],
+        null,
+    ));
+    $events->dispatch(new AgentPrompted(
+        $invocationId,
+        $prompt,
+        new AgentResponse($invocationId, 'safe', new TextUsage, new Meta($provider->name(), 'model-a')),
+    ));
 }
 
 it('passes DriverConformance with projected v1 agent events', function (): void {
@@ -815,7 +854,7 @@ it('inherits one tree decision through both approval events and then prunes life
     expect($lifecycle->retained)->toBe(['dual-approval'])
         ->and($lifecycle->released)->toBe(['dual-approval']);
 
-    foreach (['approvalDecisions', 'approvalEventsRemaining'] as $property) {
+    foreach (['approvalDecisions', 'approvalEventsRemaining', 'terminalizingApprovals', 'forcedApprovalReleases'] as $property) {
         expect((new ReflectionProperty($driver, $property))->getValue($driver))->toBe([]);
     }
 
@@ -823,13 +862,191 @@ it('inherits one tree decision through both approval events and then prunes life
         expect((new ReflectionProperty($invocations, $property))->getValue($invocations))->toBe([]);
     }
 
-    foreach (['records', 'sentMessageHashes', 'invocationRoots', 'rootStates', 'retainedTreeContexts'] as $property) {
+    foreach (['records', 'sentMessageHashes', 'invocationRoots', 'rootStates', 'retainedTreeContexts', 'retainedRoots'] as $property) {
         expect((new ReflectionProperty($buffered, $property))->getValue($buffered))->toBe([]);
     }
 })->with([
     'unsampled full' => [0.0, CaptureMode::Usage, false],
     'sampled full' => [1.0, CaptureMode::Full, true],
 ]);
+
+it('uses the official fake gateway guard and leaves no lifecycle state after success', function (): void {
+    config()->set('assay.capture', 'full');
+    $events = app(Illuminate\Contracts\Events\Dispatcher::class);
+    expect($events)->toBeInstanceOf(Dispatcher::class);
+    assert($events instanceof Dispatcher);
+    laravelAiProvider($events, 'official-fake');
+    $dispatcher = new CollectingDispatcher;
+    $drops = new InMemoryDropCounter;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        $drops,
+        $dispatcher,
+        app(),
+        sampleRate: 0.0,
+    );
+    $driver = new LaravelAiDriver($events);
+    $driver->register($buffered);
+    SummarizeAgent::fake(['safe response']);
+
+    (new SummarizeAgent)->prompt(
+        Decisions::from(['approval-id' => Decision::approve()]),
+        provider: 'official-fake',
+        model: 'model-a',
+    );
+    $buffered->flush();
+
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    foreach (['approvalDecisions', 'approvalEventsRemaining', 'terminalizingApprovals', 'forcedApprovalReleases'] as $property) {
+        expect((new ReflectionProperty($driver, $property))->getValue($driver))->toBe([]);
+    }
+    foreach (['attempts', 'parents', 'replayInputOmissions', 'approvalSnapshots'] as $property) {
+        expect((new ReflectionProperty($invocations, $property))->getValue($invocations))->toBe([]);
+    }
+    foreach (['records', 'sentMessageHashes', 'invocationRoots', 'rootStates', 'retainedTreeContexts', 'retainedRoots'] as $property) {
+        expect((new ReflectionProperty($buffered, $property))->getValue($buffered))->toBe([]);
+    }
+    expect($drops->transportTotal())->toBe(0);
+});
+
+it('expires a missing approval event after ttl and atomically releases every lifecycle map', function (): void {
+    config()->set('assay.capture', 'full');
+    $now = new DateTimeImmutable('2026-10-01T12:00:00+00:00');
+    $clock = static function () use (&$now): DateTimeImmutable {
+        return $now;
+    };
+    $events = new Dispatcher;
+    $provider = laravelAiProvider($events, 'approval-ttl');
+    $agent = new SummarizeAgent;
+    $dispatcher = new CollectingDispatcher;
+    $drops = new InMemoryDropCounter;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        $drops,
+        $dispatcher,
+        app(),
+        sampleRate: 0.0,
+        retainedStateTtlSeconds: 60,
+        clock: $clock,
+    );
+    $driver = new LaravelAiDriver($events, $clock);
+    $driver->register($buffered);
+    retainLaravelAiApprovalLifecycle($events, $provider, $agent, 'missing-event');
+
+    $now = $now->modify('+60 seconds');
+    $buffered->sweepTreeContexts();
+    $buffered->flush();
+
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    foreach (['approvalDecisions', 'approvalEventsRemaining', 'terminalizingApprovals', 'forcedApprovalReleases'] as $property) {
+        expect((new ReflectionProperty($driver, $property))->getValue($driver))->toBe([]);
+    }
+    foreach (['attempts', 'parents', 'replayInputOmissions', 'approvalSnapshots'] as $property) {
+        expect((new ReflectionProperty($invocations, $property))->getValue($invocations))->toBe([]);
+    }
+    foreach (['records', 'sentMessageHashes', 'invocationRoots', 'rootStates', 'retainedTreeContexts', 'retainedRoots'] as $property) {
+        expect((new ReflectionProperty($buffered, $property))->getValue($buffered))->toBe([]);
+    }
+    expect($drops->transportTotal())->toBe(1)
+        ->and(collect($dispatcher->dispatched)
+            ->flatMap(static fn (array $dispatch): array => EnvelopeCodec::decode($dispatch['json'])->records)
+            ->where('type', RecordType::ContentAttach))->toBeEmpty();
+});
+
+it('evicts retained root 129 oldest first at the default count bound', function (): void {
+    config()->set('assay.capture', 'full');
+    $events = new Dispatcher;
+    $provider = laravelAiProvider($events, 'approval-count-cap');
+    $agent = new SummarizeAgent;
+    $drops = new InMemoryDropCounter;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        500,
+        86400,
+        $drops,
+        new CollectingDispatcher,
+        app(),
+        sampleRate: 0.0,
+    );
+    $driver = new LaravelAiDriver($events);
+    $driver->register($buffered);
+
+    foreach (range(1, 129) as $index) {
+        retainLaravelAiApprovalLifecycle($events, $provider, $agent, 'retained-'.$index);
+    }
+
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    $decisions = (new ReflectionProperty($driver, 'approvalDecisions'))->getValue($driver);
+    $remaining = (new ReflectionProperty($driver, 'approvalEventsRemaining'))->getValue($driver);
+    $snapshots = (new ReflectionProperty($invocations, 'approvalSnapshots'))->getValue($invocations);
+    $hashes = (new ReflectionProperty($buffered, 'sentMessageHashes'))->getValue($buffered);
+    $roots = (new ReflectionProperty($buffered, 'invocationRoots'))->getValue($buffered);
+    $states = (new ReflectionProperty($buffered, 'rootStates'))->getValue($buffered);
+    $retained = (new ReflectionProperty($buffered, 'retainedTreeContexts'))->getValue($buffered);
+    $retainedRoots = (new ReflectionProperty($buffered, 'retainedRoots'))->getValue($buffered);
+
+    foreach ([$decisions, $remaining, $snapshots, $roots, $states, $retained, $retainedRoots] as $state) {
+        expect($state)->toHaveCount(128)
+            ->and($state)->not->toHaveKey('retained-1')
+            ->and($state)->toHaveKeys(['retained-2', 'retained-129']);
+    }
+    expect($hashes)->toBe([])
+        ->and($drops->transportTotal())->toBe(1);
+});
+
+it('does not recreate driver state when the current terminal root exceeds the byte cap', function (): void {
+    config()->set('assay.capture', 'full');
+    $events = new Dispatcher;
+    $provider = laravelAiProvider($events, 'approval-current-byte-cap');
+    $agent = new SummarizeAgent;
+    $drops = new InMemoryDropCounter;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        $drops,
+        new CollectingDispatcher,
+        app(),
+        sampleRate: 0.0,
+        maxRetainedBufferBytes: 1,
+    );
+    $driver = new LaravelAiDriver($events);
+    $driver->register($buffered);
+
+    retainLaravelAiApprovalLifecycle($events, $provider, $agent, 'current-byte-cap');
+
+    $invocations = (new ReflectionProperty($driver, 'invocations'))->getValue($driver);
+    foreach (['approvalDecisions', 'approvalEventsRemaining', 'terminalizingApprovals', 'forcedApprovalReleases'] as $property) {
+        expect((new ReflectionProperty($driver, $property))->getValue($driver))->toBe([]);
+    }
+    foreach (['attempts', 'parents', 'replayInputOmissions', 'approvalSnapshots'] as $property) {
+        expect((new ReflectionProperty($invocations, $property))->getValue($invocations))->toBe([]);
+    }
+    foreach (['sentMessageHashes', 'invocationRoots', 'rootStates', 'retainedTreeContexts', 'retainedRoots'] as $property) {
+        expect((new ReflectionProperty($buffered, $property))->getValue($buffered))->toBe([]);
+    }
+    expect($drops->transportTotal())->toBe(1);
+});
 
 it('releases dual-approval lifecycle state once after a requested-listener failure', function (): void {
     config()->set('assay.capture', 'full');
