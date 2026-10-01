@@ -22,7 +22,7 @@ final readonly class SubjectErasure
         private ErasureJournal $journal,
     ) {}
 
-    /** @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int} */
+    /** @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int, bounded_residue: array{stores: list<string>, protection: string, maximum_hours: int}} */
     public function erase(string $appId, string $subject, ?CarbonImmutable $cutoff = null): array
     {
         if ($subject === '') {
@@ -77,7 +77,7 @@ final readonly class SubjectErasure
 
     /**
      * @param  array{schema: int, entry_id: string, erasure_id: string, app_id: string, key_version: string, lookup_key: string, tombstone: string, cutoff_at: string, recorded_at: string}  $entry
-     * @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int}
+     * @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int, bounded_residue: array{stores: list<string>, protection: string, maximum_hours: int}}
      */
     public function reapply(array $entry): array
     {
@@ -158,7 +158,7 @@ final readonly class SubjectErasure
 
     /**
      * @param  list<string>  $subjects
-     * @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int}
+     * @return array{runs_affected: int, content_rows_deleted: int, dataset_items_deleted: int, bounded_residue: array{stores: list<string>, protection: string, maximum_hours: int}}
      */
     private function sweep(string $appId, array $subjects, string $tombstone, CarbonImmutable $cutoff): array
     {
@@ -186,6 +186,7 @@ final readonly class SubjectErasure
             'runs_affected' => $runsAffected,
             'content_rows_deleted' => $deleted,
             'dataset_items_deleted' => 0,
+            'bounded_residue' => $this->stores->boundedResidueReport(),
         ];
     }
 
@@ -227,7 +228,7 @@ final readonly class SubjectErasure
     /** @param list<string> $runIds */
     private function eraseStore(ContentStore $store, string $appId, array $runIds, CarbonImmutable $cutoff): int
     {
-        if ($runIds === [] || $store->erasure === 'late_barrier') {
+        if ($runIds === [] || $store->erasure === 'bounded_residue') {
             return 0;
         }
 

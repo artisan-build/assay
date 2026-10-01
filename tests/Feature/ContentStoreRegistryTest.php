@@ -40,9 +40,23 @@ it('classifies every text and json column in app-owned content-capable schemas',
 });
 
 it('assigns executable retention and erasure behavior to every registered store', function (): void {
-    foreach (resolve(ContentStoreRegistry::class)->stores() as $store) {
+    $registry = resolve(ContentStoreRegistry::class);
+
+    foreach ($registry->stores() as $store) {
         expect($store->retention)->not->toBe('')
             ->and($store->erasure)->not->toBe('')
             ->and($store->contentColumns)->not->toBeEmpty();
     }
+
+    $residue = collect($registry->stores())->where('erasure', 'bounded_residue');
+
+    expect($residue->pluck('table')->values()->all())->toBe(['jobs', 'failed_jobs'])
+        ->and($residue->pluck('maximumResidueHours')->unique()->values()->all())->toBe([72])
+        ->and(collect($registry->stores())->pluck('erasure'))->not->toContain('late_barrier');
+
+    config()->set('assay.queue.failed_retention_hours', 1_000);
+    config()->set('assay.retention.run_content_days', 1);
+
+    expect(collect($registry->stores())->where('erasure', 'bounded_residue')->pluck('maximumResidueHours')->unique()->values()->all())
+        ->toBe([24]);
 });

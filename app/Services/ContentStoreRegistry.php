@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Data\ContentStore;
+use RuntimeException;
 
 final class ContentStoreRegistry
 {
@@ -26,13 +27,37 @@ final class ContentStoreRegistry
     /** @return list<ContentStore> */
     public function stores(): array
     {
+        $maximumResidueHours = $this->boundedResidueHours();
+
         return [
             new ContentStore($this->recordContent(), ['content'], 'run_record', 'run_record'),
             new ContentStore($this->messages(), ['body'], 'run_message', 'run_message'),
             new ContentStore($this->pendingContentAttaches(), ['content'], 'timestamp', 'pending_target'),
-            new ContentStore($this->queueJobs(), ['payload'], 'unix_timestamp', 'late_barrier'),
-            new ContentStore($this->failedJobs(), ['payload', 'exception'], 'failed_timestamp', 'late_barrier'),
+            new ContentStore($this->queueJobs(), ['payload'], 'queue_timestamp', 'bounded_residue', $maximumResidueHours),
+            new ContentStore($this->failedJobs(), ['payload', 'exception'], 'failed_queue_timestamp', 'bounded_residue', $maximumResidueHours),
         ];
+    }
+
+    /** @return array{stores: list<string>, protection: string, maximum_hours: int} */
+    public function boundedResidueReport(): array
+    {
+        return [
+            'stores' => [$this->queueJobs(), $this->failedJobs()],
+            'protection' => 'encrypted_barrier',
+            'maximum_hours' => $this->boundedResidueHours(),
+        ];
+    }
+
+    public function boundedResidueHours(): int
+    {
+        $configured = config('assay.queue.failed_retention_hours');
+        $contentDays = config('assay.retention.run_content_days');
+
+        if (! is_int($configured) || $configured < 1 || ! is_int($contentDays) || $contentDays < 1) {
+            throw new RuntimeException('Queue residue and content retention must be positive integers.');
+        }
+
+        return min($configured, $contentDays * 24);
     }
 
     public function queueJobs(): string

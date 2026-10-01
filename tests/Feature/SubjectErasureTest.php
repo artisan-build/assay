@@ -104,7 +104,10 @@ it('erases app-scoped content and held attaches, tombstones metadata, and journa
         DB::table('assay_runs')->where('app_id', $appId)->get(),
     ], JSON_THROW_ON_ERROR);
 
-    expect($result)->toBe(['runs_affected' => 1, 'content_rows_deleted' => 4, 'dataset_items_deleted' => 0])
+    expect($result['runs_affected'])->toBe(1)
+        ->and($result['content_rows_deleted'])->toBe(4)
+        ->and($result['dataset_items_deleted'])->toBe(0)
+        ->and($result['bounded_residue']['protection'])->toBe('encrypted_barrier')
         ->and(DB::table('assay_record_content')->join('assay_runs', 'assay_runs.id', '=', 'assay_record_content.run_id')->where('assay_runs.app_id', $appId)->count())->toBe(0)
         ->and(DB::table('assay_messages')->join('assay_runs', 'assay_runs.id', '=', 'assay_messages.run_id')->where('assay_runs.app_id', $appId)->count())->toBe(0)
         ->and(DB::table('assay_pending_content_attaches')->where('app_id', $appId)->count())->toBe(0)
@@ -202,7 +205,9 @@ it('erases descendant content and bars records through inherited invocation subj
         ]),
     ], receivedAt: '2026-10-01T12:06:00.000000+00:00');
 
-    expect($result)->toBe(['runs_affected' => 2, 'content_rows_deleted' => 2, 'dataset_items_deleted' => 0])
+    expect($result['runs_affected'])->toBe(2)
+        ->and($result['content_rows_deleted'])->toBe(2)
+        ->and($result['dataset_items_deleted'])->toBe(0)
         ->and(DB::table('assay_record_content')->count())->toBe(0)
         ->and(DB::table('assay_runs')->distinct()->pluck('subject')->count())->toBe(1)
         ->and(DB::table('assay_runs')->value('subject'))->toStartWith('deleted:')
@@ -213,8 +218,6 @@ it('rejects late encrypted queue replay without exposing subject content or key 
     $subject = 'LATE-QUEUE-SUBJECT-CANARY';
     $content = 'LATE-QUEUE-CONTENT-CANARY';
     ingestErasureRecords([EnvelopeFactory::record(['invocation_id' => 'late-queue-run', 'subject' => $subject])]);
-    $appId = (string) DB::table('assay_apps')->where('app_ref', 'erasure-app')->value('id');
-    resolve(SubjectErasure::class)->erase($appId, $subject, CarbonImmutable::parse('2026-10-01T12:05:00.000000+00:00'));
     $job = ProcessUsageEnvelope::fromContract(
         'erasure-app',
         '2026-10-01T12:06:00.000000+00:00',
@@ -237,14 +240,33 @@ it('rejects late encrypted queue replay without exposing subject content or key 
     /** @var FailedJobProviderInterface $failedJobs */
     $failedJobs = resolve('queue.failer');
     $failedJobs->log('database', 'erasure-late-queue', $payload, new RuntimeException('value-free forced failure'));
+    $failed = DB::table('failed_jobs')->where('queue', 'erasure-late-queue')->sole();
+    $appId = (string) DB::table('assay_apps')->where('app_ref', 'erasure-app')->value('id');
+    $result = resolve(SubjectErasure::class)->erase($appId, $subject, CarbonImmutable::parse('2026-10-01T12:05:00.000000+00:00'));
+    $durableQueueSurfaces = $payload.(string) $failed->payload.(string) $failed->exception;
 
-    $job->handle(resolve(UsageIngestProcessor::class));
-    $job->handle(resolve(UsageIngestProcessor::class));
-    $durableQueueSurfaces = $payload.(string) DB::table('failed_jobs')->where('queue', 'erasure-late-queue')->value('payload')
-        .(string) DB::table('failed_jobs')->where('queue', 'erasure-late-queue')->value('exception');
+    expect(DB::table('jobs')->where('queue', 'erasure-late-queue')->count())->toBe(1)
+        ->and(DB::table('failed_jobs')->where('queue', 'erasure-late-queue')->count())->toBe(1)
+        ->and($result['content_rows_deleted'])->toBe(0)
+        ->and($result['bounded_residue'])->toBe([
+            'stores' => ['jobs', 'failed_jobs'],
+            'protection' => 'encrypted_barrier',
+            'maximum_hours' => 72,
+        ]);
+
+    DB::table('jobs')->where('queue', 'erasure-late-queue')->delete();
+    Artisan::call('queue:retry', ['id' => [(string) $failed->uuid]]);
+    Artisan::call('queue:work', [
+        'connection' => 'database',
+        '--queue' => 'erasure-late-queue',
+        '--once' => true,
+        '--tries' => 1,
+    ]);
 
     expect(DB::table('assay_records')->where('record_id', $job->envelope['records'][0]['record_id'])->exists())->toBeFalse()
         ->and(DB::table('assay_record_content')->count())->toBe(0)
+        ->and(DB::table('jobs')->where('queue', 'erasure-late-queue')->count())->toBe(0)
+        ->and(DB::table('failed_jobs')->where('queue', 'erasure-late-queue')->count())->toBe(0)
         ->and($durableQueueSurfaces)->not->toContain($subject, $content, 'ERASURE-KEY-CANARY-32-BYTES-LONG')
         ->and(implode("\n", $logs))->not->toContain($subject, $content, 'ERASURE-KEY-CANARY-32-BYTES-LONG');
 });
@@ -276,7 +298,10 @@ it('retains historical keys for lookup and repeat erasure without changing old t
         ->and(DB::table('assay_erasure_records')->value('tombstone'))->toBe($oldTombstone)
         ->and(DB::table('assay_runs')->where('id', DB::table('assay_runs')->value('id'))->value('subject'))->toBe($oldTombstone)
         ->and($result['runs_affected'])->toBe(1)
-        ->and($tombstoneRepeat)->toBe(['runs_affected' => 0, 'content_rows_deleted' => 0, 'dataset_items_deleted' => 0]);
+        ->and($tombstoneRepeat['runs_affected'])->toBe(0)
+        ->and($tombstoneRepeat['content_rows_deleted'])->toBe(0)
+        ->and($tombstoneRepeat['dataset_items_deleted'])->toBe(0)
+        ->and($tombstoneRepeat['bounded_residue']['maximum_hours'])->toBe(72);
 });
 
 it('uses the frozen HMAC domain and isolates the same subject between apps', function (): void {

@@ -10,7 +10,10 @@ $erasureKeys = is_array($historicalErasureKeys)
     : null;
 
 return [
-    'queue' => env('ASSAY_INGEST_QUEUE'),
+    'queue' => [
+        'connection' => env('ASSAY_INGEST_QUEUE'),
+        'failed_retention_hours' => (int) env('ASSAY_QUEUE_FAILED_RETENTION_HOURS', 72),
+    ],
     'stale_after_minutes' => (int) env('ASSAY_STALE_AFTER_MINUTES', 30),
     'ingest' => [
         'max_body_bytes' => (int) env('ASSAY_INGEST_MAX_BODY_BYTES', 8_388_608),

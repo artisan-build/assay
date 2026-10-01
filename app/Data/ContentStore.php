@@ -14,5 +14,6 @@ final readonly class ContentStore
         public array $contentColumns,
         public string $retention,
         public string $erasure,
+        public ?int $maximumResidueHours = null,
     ) {}
 }

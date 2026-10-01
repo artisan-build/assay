@@ -127,7 +127,7 @@ final class IngestController extends Controller
             envelope: $envelope,
             rejectedContentAttaches: $rejectedContentAttaches,
         );
-        $queue = config('assay.queue');
+        $queue = config('assay.queue.connection');
 
         if (is_string($queue) && $queue !== '') {
             $job->onConnection($queue);

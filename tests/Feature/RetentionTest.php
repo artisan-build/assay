@@ -64,31 +64,20 @@ it('honors exact content and usage boundaries while preserving recent usage tota
 
 it('drains every eligible store to the retention boundary in bounded batches per scheduled invocation', function (): void {
     $asOf = CarbonImmutable::parse('2026-10-01T12:00:00.000000+00:00');
-    $old = $asOf->subDays(30)->timestamp;
-    $new = $asOf->subDays(30)->addSecond()->timestamp;
+    ingestRetentionRun('scheduled-old-one', '2026-09-01T12:00:00.000000+00:00', 'SCHEDULED-OLD-ONE');
+    ingestRetentionRun('scheduled-old-two', '2026-08-31T12:00:00.000000+00:00', 'SCHEDULED-OLD-TWO');
+    ingestRetentionRun('scheduled-new', '2026-09-01T12:00:00.000001+00:00', 'SCHEDULED-NEW');
 
-    DB::table('jobs')->insert([
-        ['queue' => 'default', 'payload' => 'OLD-JOB-ONE', 'attempts' => 0, 'reserved_at' => null, 'available_at' => $old, 'created_at' => $old],
-        ['queue' => 'default', 'payload' => 'OLD-JOB-TWO', 'attempts' => 0, 'reserved_at' => null, 'available_at' => $old, 'created_at' => $old],
-        ['queue' => 'default', 'payload' => 'NEW-JOB', 'attempts' => 0, 'reserved_at' => null, 'available_at' => $new, 'created_at' => $new],
-    ]);
-    DB::table('failed_jobs')->insert([
-        ['uuid' => (string) UuidV7::generate(), 'connection' => 'database', 'queue' => 'default', 'payload' => 'OLD-FAILED', 'exception' => 'OLD-EXCEPTION', 'failed_at' => $asOf->subDays(30)->format('Y-m-d H:i:s.uP')],
-        ['uuid' => (string) UuidV7::generate(), 'connection' => 'database', 'queue' => 'default', 'payload' => 'NEW-FAILED', 'exception' => 'NEW-EXCEPTION', 'failed_at' => $asOf->subDays(30)->addSecond()->format('Y-m-d H:i:s.uP')],
-    ]);
-
-    config()->set('queue.default', 'database');
     $status = Artisan::call('assay:retention:prune', [
         '--as-of' => $asOf->format('Y-m-d\TH:i:s.uP'),
         '--limit' => '1',
     ]);
 
     expect($status)->toBe(Command::SUCCESS)
-        ->and(Artisan::output())->toContain('3 content rows')
-        ->and(DB::table('jobs')->pluck('payload')->all())->toBe(['NEW-JOB'])
-        ->and(DB::table('failed_jobs')->pluck('payload')->all())->toBe(['NEW-FAILED'])
-        ->and(config('queue.connections.database.table'))->toBe('jobs')
-        ->and(config('queue.failed.table'))->toBe('failed_jobs');
+        ->and(Artisan::output())->toContain('2 content rows')
+        ->and(DB::table('assay_record_content')->count())->toBe(1)
+        ->and((string) DB::table('assay_record_content')->value('content'))->toContain('SCHEDULED-NEW')
+        ->and(DB::table('assay_usage_metrics')->sum('value'))->toEqual(21);
 });
 
 it('expires usage metadata without weakening erasure records or the object journal', function (): void {
