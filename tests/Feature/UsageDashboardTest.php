@@ -7,6 +7,7 @@ use App\Services\UsageIngestProcessor;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
 use Tests\Support\EnvelopeFactory;
 
@@ -360,6 +361,226 @@ it('projects discriminating PostgreSQL data across all seven dashboard tables', 
         'p95_ms' => '600000',
         'status' => 'reported',
     ]);
+});
+
+it('rolls selected usage through a three-level run tree without counting agent checksums', function (): void {
+    $owner = dashboardOwner();
+    $records = [
+        EnvelopeFactory::record([
+            'operation' => 'embeddings',
+            'invocation_id' => 'tree-embedding',
+            'parent_invocation_id' => 'tree-leaf',
+            'parent_tool_invocation_id' => 'leaf-tool',
+            'attempt' => null,
+            'at' => '2026-10-01T14:00:03.000000+00:00',
+            'model' => ['provider' => 'tree-provider', 'requested' => 'tree-model'],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'embeddings',
+            'invocation_id' => 'tree-embedding',
+            'parent_invocation_id' => 'tree-leaf',
+            'parent_tool_invocation_id' => 'leaf-tool',
+            'attempt' => null,
+            'at' => '2026-10-01T14:00:04.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 7],
+            'model' => ['provider' => 'tree-provider', 'requested' => 'tree-model'],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'tree-leaf',
+            'parent_invocation_id' => 'tree-middle',
+            'parent_tool_invocation_id' => 'middle-tool',
+            'at' => '2026-10-01T14:00:02.000000+00:00',
+            'agent' => 'TreeLeafAgent',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'tree-leaf',
+            'at' => '2026-10-01T14:00:05.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 1.0,
+            'usage' => ['input_tokens' => 5],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'tree-leaf',
+            'at' => '2026-10-01T14:00:06.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 5],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'tree-middle',
+            'parent_invocation_id' => 'tree-root',
+            'parent_tool_invocation_id' => 'root-tool',
+            'at' => '2026-10-01T14:00:01.000000+00:00',
+            'agent' => 'TreeMiddleAgent',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'tree-middle',
+            'at' => '2026-10-01T14:00:07.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 1.0,
+            'usage' => ['input_tokens' => 3],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'tree-middle',
+            'at' => '2026-10-01T14:00:08.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 3],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'tree-root',
+            'at' => '2026-10-01T14:00:00.000000+00:00',
+            'agent' => 'TreeRootAgent',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'tree-root',
+            'at' => '2026-10-01T14:00:09.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 1.0,
+            'usage' => ['input_tokens' => 2],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'tree-root',
+            'at' => '2026-10-01T14:00:10.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 100],
+        ]),
+    ];
+
+    ProcessUsageEnvelope::fromContract(
+        'tree-app',
+        '2026-10-01T14:01:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    expect(DB::table('assay_usage_metrics')->where('source', 'agent_checksum')->sum('value'))->toBe('108')
+        ->and(DB::table('assay_usage_metrics')->whereIn('source', ['agent_step', 'non_agent'])->sum('value'))->toBe('17');
+
+    $topRuns = $this->actingAs($owner)->getJson(route('assay.dashboard.top-runs'))
+        ->assertOk()->json('rows');
+    expect(collect($topRuns)->pluck('invocation_id')->all())->toBe([
+        'tree-root',
+        'tree-middle',
+        'tree-leaf',
+        'tree-embedding',
+    ])->and(collect($topRuns)->pluck('usage', 'invocation_id')->all())->toBe([
+        'tree-root' => '17',
+        'tree-middle' => '15',
+        'tree-leaf' => '12',
+        'tree-embedding' => '7',
+    ]);
+
+    $agents = collect($this->actingAs($owner)->getJson(route('assay.dashboard.usage-by-agent'))
+        ->assertOk()->json('rows'));
+    expect($agents->firstWhere('agent', 'TreeRootAgent'))->toMatchArray([
+        'reported_run_count' => '1',
+        'median_usage_per_run' => '17',
+        'p95_usage_per_run' => '17',
+    ])->and($agents->firstWhere('agent', 'TreeMiddleAgent'))->toMatchArray([
+        'reported_run_count' => '1',
+        'median_usage_per_run' => '15',
+        'p95_usage_per_run' => '15',
+    ])->and($agents->firstWhere('agent', 'TreeLeafAgent'))->toMatchArray([
+        'reported_run_count' => '1',
+        'median_usage_per_run' => '12',
+        'p95_usage_per_run' => '12',
+    ]);
+});
+
+it('projects failed steps as provider and model attributed counts in JSON HTML and CSV', function (): void {
+    $owner = dashboardOwner();
+    $records = [
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'failed-step-fallback',
+            'agent' => 'FailedStepAgent',
+            'model' => ['provider' => 'failed-provider', 'requested' => 'fallback-requested'],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.fail',
+            'invocation_id' => 'failed-step-fallback',
+            'at' => '2026-10-01T12:00:01.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 10.0,
+            'failure_class' => 'App\\Exceptions\\FallbackFailure',
+            'model' => ['provider' => 'failed-provider', 'requested' => 'fallback-requested'],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'failed-step-responded',
+            'at' => '2026-10-01T12:01:00.000000+00:00',
+            'agent' => 'FailedStepAgent',
+            'model' => ['provider' => 'failed-provider', 'requested' => 'responded-requested'],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.fail',
+            'invocation_id' => 'failed-step-responded',
+            'at' => '2026-10-01T12:01:01.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 20.0,
+            'failure_class' => 'App\\Exceptions\\RespondedFailure',
+            'model' => [
+                'provider' => 'failed-provider',
+                'requested' => 'responded-requested',
+                'responded' => 'failed-responded',
+            ],
+        ]),
+    ];
+
+    ProcessUsageEnvelope::fromContract(
+        'failed-step-app',
+        '2026-10-01T12:02:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    $json = $this->actingAs($owner)->getJson(route('assay.dashboard.reliability'))->assertOk()->json();
+    $failedSteps = collect($json['rows'])->where('measure', 'failed_step_count')->values();
+    expect($failedSteps->all())->toBe([
+        [
+            'measure' => 'failed_step_count',
+            'provider' => 'failed-provider',
+            'model' => 'failed-responded',
+            'event_count' => '1',
+            'qualification' => 'usage_unavailable_count_only',
+        ],
+        [
+            'measure' => 'failed_step_count',
+            'provider' => 'failed-provider',
+            'model' => 'fallback-requested',
+            'event_count' => '1',
+            'qualification' => 'usage_unavailable_count_only',
+        ],
+    ])->and($json['headers'])->not->toContain('usage');
+
+    $csv = $this->actingAs($owner)->get(route('assay.dashboard.reliability.csv'))->assertOk();
+    $failedStepCsv = collect(csvRows($csv))->where('measure', 'failed_step_count')->values();
+    expect($failedStepCsv->pluck('model')->all())->toBe(['failed-responded', 'fallback-requested'])
+        ->and($failedStepCsv->pluck('observation_count')->unique()->all())->toBe([''])
+        ->and($failedStepCsv->pluck('rate')->unique()->all())->toBe(['']);
+
+    $this->actingAs($owner)->get(route('assay.dashboard'))
+        ->assertOk()
+        ->assertSeeInOrder([
+            'failed_step_count',
+            'failed-provider',
+            'failed-responded',
+            'usage_unavailable_count_only',
+        ])
+        ->assertSeeInOrder([
+            'failed_step_count',
+            'failed-provider',
+            'fallback-requested',
+            'usage_unavailable_count_only',
+        ]);
 });
 
 it('keeps selected units separate and preserves omitted zero fractional and percentile semantics in HTML JSON and CSV', function (): void {

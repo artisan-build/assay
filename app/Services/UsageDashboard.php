@@ -86,22 +86,38 @@ final class UsageDashboard
     public function usageByAgent(UsageMetric $metric): DashboardTable
     {
         $rows = $this->rows(<<<'SQL'
-            WITH selected_usage AS (
+            WITH RECURSIVE direct_usage AS (
                 SELECT run_id, SUM(value) AS usage
                 FROM assay_usage_metrics
                 WHERE metric = ? AND source IN ('agent_step', 'non_agent')
                 GROUP BY run_id
+            ), run_descendants AS (
+                SELECT id AS run_id, id AS descendant_run_id
+                FROM assay_runs
+
+                UNION ALL
+
+                SELECT run_descendants.run_id, child.id
+                FROM run_descendants
+                INNER JOIN assay_runs child
+                    ON child.parent_run_id = run_descendants.descendant_run_id
+            ), subtree_usage AS (
+                SELECT run_descendants.run_id, SUM(direct_usage.usage) AS usage
+                FROM run_descendants
+                INNER JOIN direct_usage
+                    ON direct_usage.run_id = run_descendants.descendant_run_id
+                GROUP BY run_descendants.run_id
             ), run_stats AS (
                 SELECT
                     r.id,
                     COALESCE(r.agent, 'not_reported') AS agent,
-                    selected_usage.usage,
+                    subtree_usage.usage,
                     COUNT(s.id) FILTER (WHERE s.event IN ('end', 'fail')) AS step_count
                 FROM assay_runs r
-                LEFT JOIN selected_usage ON selected_usage.run_id = r.id
+                LEFT JOIN subtree_usage ON subtree_usage.run_id = r.id
                 LEFT JOIN assay_steps s ON s.run_id = r.id
                 WHERE r.operation = 'agent'
-                GROUP BY r.id, r.agent, selected_usage.usage
+                GROUP BY r.id, r.agent, subtree_usage.usage
             )
             SELECT
                 CAST(? AS text) AS metric,
@@ -173,14 +189,33 @@ final class UsageDashboard
     ): DashboardTable {
         $limit = $this->limit($limit);
         $rows = $this->rows(<<<SQL
-            WITH selected_usage AS (
+            WITH RECURSIVE direct_usage AS (
                 SELECT run_id, metric, SUM(value) AS usage
                 FROM assay_usage_metrics
                 WHERE metric = ? AND source IN ('agent_step', 'non_agent')
                 GROUP BY run_id, metric
+            ), run_descendants AS (
+                SELECT id AS run_id, id AS descendant_run_id
+                FROM assay_runs
+
+                UNION ALL
+
+                SELECT run_descendants.run_id, child.id
+                FROM run_descendants
+                INNER JOIN assay_runs child
+                    ON child.parent_run_id = run_descendants.descendant_run_id
+            ), subtree_usage AS (
+                SELECT
+                    run_descendants.run_id,
+                    direct_usage.metric,
+                    SUM(direct_usage.usage) AS usage
+                FROM run_descendants
+                INNER JOIN direct_usage
+                    ON direct_usage.run_id = run_descendants.descendant_run_id
+                GROUP BY run_descendants.run_id, direct_usage.metric
             )
             SELECT
-                selected_usage.metric,
+                subtree_usage.metric,
                 r.id AS run_id,
                 a.app_ref AS app,
                 r.invocation_id,
@@ -189,11 +224,11 @@ final class UsageDashboard
                 COALESCE(r.agent, 'not_reported') AS agent,
                 COALESCE(r.subject, 'not_reported') AS subject,
                 r.status,
-                selected_usage.usage::text AS usage
-            FROM selected_usage
-            INNER JOIN assay_runs r ON r.id = selected_usage.run_id
+                subtree_usage.usage::text AS usage
+            FROM subtree_usage
+            INNER JOIN assay_runs r ON r.id = subtree_usage.run_id
             INNER JOIN assay_apps a ON a.id = r.app_id
-            ORDER BY selected_usage.usage DESC, r.id
+            ORDER BY subtree_usage.usage DESC, r.id
             LIMIT {$limit}
             SQL, [$metric->value]);
 
@@ -245,6 +280,29 @@ final class UsageDashboard
                 FROM assay_runs
                 WHERE operation <> 'agent' AND status IN ('completed', 'failed', 'failed_or_lost')
                 GROUP BY operation
+            ), failed_step_counts AS (
+                SELECT
+                    COALESCE(s.provider, r.provider, 'not_reported') AS provider,
+                    COALESCE(
+                        s.responded_model,
+                        s.requested_model,
+                        r.responded_model,
+                        r.requested_model,
+                        'not_reported'
+                    ) AS model,
+                    COUNT(*) AS event_count
+                FROM assay_steps s
+                INNER JOIN assay_runs r ON r.id = s.run_id
+                WHERE s.event = 'fail'
+                GROUP BY
+                    COALESCE(s.provider, r.provider, 'not_reported'),
+                    COALESCE(
+                        s.responded_model,
+                        s.requested_model,
+                        r.responded_model,
+                        r.requested_model,
+                        'not_reported'
+                    )
             ), model_observations AS (
                 SELECT
                     a.id::text AS observation_id,
@@ -343,6 +401,20 @@ final class UsageDashboard
 
                 SELECT
                     3,
+                    'failed_step_count',
+                    NULL::text,
+                    provider,
+                    model,
+                    event_count,
+                    NULL::bigint,
+                    NULL::text,
+                    'usage_unavailable_count_only'
+                FROM failed_step_counts
+
+                UNION ALL
+
+                SELECT
+                    4,
                     'failover_rate',
                     NULL::text,
                     provider,
@@ -359,7 +431,7 @@ final class UsageDashboard
                 UNION ALL
 
                 SELECT
-                    4,
+                    5,
                     'tool_failure_rate',
                     dimension,
                     NULL::text,
