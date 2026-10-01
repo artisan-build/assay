@@ -67,6 +67,7 @@ final readonly class RecordV1
 
         $this->validateShape();
         $this->validateMetadata();
+        $this->content?->validateFor($this->type, $this->operation, $this->outcome);
     }
 
     /** @param array<string, mixed> $data */
@@ -115,6 +116,7 @@ final readonly class RecordV1
     {
         $this->validateShape();
         $this->validateMetadata();
+        $this->content?->validateFor($this->type, $this->operation, $this->outcome);
 
         return array_filter([
             'record_id' => (string) $this->recordId,

@@ -84,7 +84,7 @@ literal strings.
 
 ## Stack Notes
 
-- Laravel 13, Livewire 4, Flux 2, and PHP 8.3 or newer.
+- Laravel 13, Livewire 4, Flux 2, and PHP 8.4 or newer.
 - Nodeless by design: no Node, npm, Vite, or frontend build step.
 - Tailwind is served from `public/build/assets/app.css`; regenerate it only with
   `php artisan tailwind:optimize` and commit the output.

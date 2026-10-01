@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessUsageEnvelope;
+use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
 use ArtisanBuild\AssayContracts\InvalidEnvelope;
 use ArtisanBuild\BuiltForCloud\AppPurposeRegistry;
@@ -15,7 +16,7 @@ use ArtisanBuild\BuiltForCloud\SubjectType;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
-use JsonException;
+use LengthException;
 
 final class IngestController extends Controller
 {
@@ -48,40 +49,62 @@ final class IngestController extends Controller
             return response()->json(['error' => 'payload_too_large', 'limit_bytes' => $maxBodyBytes], 413);
         }
 
-        try {
-            $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            return response()->json(['message' => 'Envelope JSON is malformed.'], 422);
-        }
-
-        if (is_array($decoded)
-            && isset($decoded['envelope_version'])
-            && is_int($decoded['envelope_version'])
-            && $decoded['envelope_version'] > EnvelopeV1::VERSION) {
-            return response()->json([
-                'message' => 'Envelope v'.$decoded['envelope_version'].' is newer than this Assay server (max v'.EnvelopeV1::VERSION.'). Upgrade your Assay server.',
-            ], 422);
-        }
-
         $maxRecords = max(1, (int) config('assay.ingest.max_records', 500));
         $maxSources = max(1, (int) config('assay.ingest.max_sources', 16));
+        $newerVersion = null;
+        $overLimit = null;
 
-        if (is_array($decoded) && is_array($decoded['records'] ?? null) && count($decoded['records']) > $maxRecords) {
+        try {
+            $envelope = EnvelopeCodec::decode($body, static function (array $decoded) use (
+                $maxRecords,
+                $maxSources,
+                &$newerVersion,
+                &$overLimit,
+            ): void {
+                $version = $decoded['envelope_version'] ?? null;
+
+                if (is_int($version) && $version > EnvelopeV1::VERSION) {
+                    $newerVersion = $version;
+
+                    throw new InvalidEnvelope('Envelope version is newer than the server.');
+                }
+
+                if (is_array($decoded['records'] ?? null) && count($decoded['records']) > $maxRecords) {
+                    $overLimit = 'records';
+
+                    throw new LengthException('Envelope has too many records.');
+                }
+
+                if (is_array($decoded['sources'] ?? null) && count($decoded['sources']) > $maxSources) {
+                    $overLimit = 'sources';
+
+                    throw new LengthException('Envelope has too many sources.');
+                }
+            });
+        } catch (LengthException) {
+            return $overLimit === 'records'
+                ? response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413)
+                : response()->json(['error' => 'too_many_sources', 'limit' => $maxSources], 413);
+        } catch (InvalidEnvelope $exception) {
+            if ($exception->getMessage() === 'Envelope JSON is malformed.') {
+                return response()->json(['message' => 'Envelope JSON is malformed.'], 422);
+            }
+
+            if ($newerVersion !== null) {
+                return response()->json([
+                    'message' => 'Envelope v'.$newerVersion.' is newer than this Assay server (max v'.EnvelopeV1::VERSION.'). Upgrade your Assay server.',
+                ], 422);
+            }
+
+            return response()->json(['message' => 'Envelope is invalid.'], 422);
+        }
+
+        if (count($envelope->records) > $maxRecords) {
             return response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413);
         }
 
-        if (is_array($decoded) && is_array($decoded['sources'] ?? null) && count($decoded['sources']) > $maxSources) {
+        if (count($envelope->sources) > $maxSources) {
             return response()->json(['error' => 'too_many_sources', 'limit' => $maxSources], 413);
-        }
-
-        try {
-            $envelope = is_array($decoded) ? EnvelopeV1::fromArray($decoded) : null;
-        } catch (InvalidEnvelope) {
-            return response()->json(['message' => 'Envelope is invalid.'], 422);
-        }
-
-        if ($envelope === null) {
-            return response()->json(['message' => 'Envelope is invalid.'], 422);
         }
 
         if (! $usage->recordUsage($credential)) {

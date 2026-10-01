@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "e35b9ed67e3305cd8c04fd0430adb719",
+    "content-hash": "e39c225e3c40cea16a539cc380ec2007",
     "packages": [
         {
             "name": "artisan-build/assay-contracts",
@@ -12006,7 +12006,7 @@
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {
-        "php": "^8.3"
+        "php": "^8.4"
     },
     "platform-dev": {},
     "plugin-api-version": "2.9.0"

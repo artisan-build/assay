@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Exceptions\ContentPersistenceFailed;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PDOException;
 use RuntimeException;
 use stdClass;
 
@@ -17,9 +19,8 @@ final class UsageIngestProcessor
      */
     public function process(string $appRef, string $receivedAt, array $envelope): void
     {
-        $appId = $this->app($appRef, $envelope, $receivedAt);
-
-        DB::transaction(function () use ($appId, $receivedAt, $envelope): void {
+        DB::transaction(function () use ($appRef, $receivedAt, $envelope): void {
+            $appId = $this->app($appRef, $envelope, $receivedAt);
             $envelopeId = (string) Str::uuid();
 
             $inserted = DB::table('assay_envelopes')->insertOrIgnore([
@@ -124,6 +125,10 @@ final class UsageIngestProcessor
 
         if (isset($record['usage'])) {
             $this->usage($recordRowId, $runId, $attemptId, $record);
+        }
+
+        if (isset($record['content'])) {
+            $this->content($recordRowId, $runId, (string) $record['record_id'], $record);
         }
 
         $this->reconcileRun($runId, CarbonImmutable::parse($receivedAt));
@@ -357,6 +362,81 @@ final class UsageIngestProcessor
                 'responded_model' => $record['model']['responded'] ?? null,
             ]);
         }
+    }
+
+    /** @param array<string, mixed> $record */
+    private function content(string $recordId, string $runId, string $sourceRecordId, array $record): void
+    {
+        try {
+            $this->persistContent($recordId, $runId, $record);
+        } catch (PDOException $exception) {
+            throw ContentPersistenceFailed::fromDatabase($exception, $sourceRecordId);
+        }
+    }
+
+    /** @param array<string, mixed> $record */
+    private function persistContent(string $recordId, string $runId, array $record): void
+    {
+        $contentObject = is_string($record['content'])
+            ? json_decode($record['content'], false, 512, JSON_THROW_ON_ERROR)
+            : null;
+
+        if (! $contentObject instanceof stdClass) {
+            throw new RuntimeException('Validated record content must be an encoded JSON object.');
+        }
+
+        $content = get_object_vars($contentObject);
+
+        if ($record['type'] === 'step.start') {
+            foreach ($content['message_hashes'] ?? [] as $position => $hash) {
+                DB::table('assay_message_references')->insertOrIgnore([
+                    'record_id' => $recordId,
+                    'run_id' => $runId,
+                    'position' => $position,
+                    'hash' => $hash,
+                ]);
+            }
+
+            $newMessages = $content['new_messages'] ?? new stdClass;
+
+            if (! $newMessages instanceof stdClass) {
+                throw new RuntimeException('Validated new_messages must be an encoded JSON object.');
+            }
+
+            foreach (get_object_vars($newMessages) as $hash => $body) {
+                DB::table('assay_messages')->insertOrIgnore([
+                    'id' => (string) Str::uuid(),
+                    'run_id' => $runId,
+                    'hash' => $hash,
+                    'body' => json_encode($body, JSON_THROW_ON_ERROR),
+                ]);
+            }
+
+            if (get_object_vars($newMessages) !== []) {
+                unset($content['new_messages']);
+            }
+        }
+
+        if ($content !== []) {
+            DB::table('assay_record_content')->insertOrIgnore([
+                'id' => (string) Str::uuid(),
+                'record_id' => $recordId,
+                'run_id' => $runId,
+                'content' => json_encode($content, JSON_THROW_ON_ERROR),
+            ]);
+        }
+
+        $unresolved = DB::table('assay_message_references as reference')
+            ->where('reference.run_id', $runId)
+            ->whereNotExists(function ($query): void {
+                $query->selectRaw('1')
+                    ->from('assay_messages as message')
+                    ->whereColumn('message.run_id', 'reference.run_id')
+                    ->whereColumn('message.hash', 'reference.hash');
+            })
+            ->exists();
+
+        DB::table('assay_runs')->where('id', $runId)->update(['content_incomplete' => $unresolved]);
     }
 
     public function reconcileStale(?CarbonImmutable $asOf = null, ?int $limit = null): int

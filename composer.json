@@ -13,9 +13,10 @@
     ],
     "license": "MIT",
     "require": {
-        "php": "^8.3",
+        "php": "^8.4",
         "artisan-build/assay-contracts": "^1.0",
         "artisan-build/built-for-cloud": "^0.19.7",
+        "artisan-build/built-for-cloud-contracts": "^0.4",
         "laravel/chisel": "^0.1.0",
         "laravel/framework": "^13.19",
         "laravel/tinker": "^3.0",
