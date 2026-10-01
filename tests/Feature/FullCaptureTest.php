@@ -91,7 +91,15 @@ it('stores full content, never stores usage content, and resolves late message b
 });
 
 it('round-trips every frozen content shape through PostgreSQL and the run tree', function (): void {
-    $message = ['role' => 'user', 'text' => 'MESSAGE-MATRIX-CANARY'];
+    $message = [
+        'role' => 'assistant',
+        'text' => 'MESSAGE-MATRIX-CANARY',
+        'tool_calls' => [[
+            'arguments' => (object) [],
+            'id' => 'message-call-1',
+            'name' => 'lookup',
+        ]],
+    ];
     $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR));
     $structuredRecordId = (string) UuidV7::generate();
     $records = [
@@ -160,13 +168,43 @@ it('round-trips every frozen content shape through PostgreSQL and the run tree',
     expect($stored->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
         ->and($stored->structured_output->empty_list)->toBe([]);
 
-    $owner = fullCaptureUser('Matrix Content Owner', UserRole::Owner);
+    $admin = fullCaptureUser('Matrix Content Admin', UserRole::Admin);
     $runId = (string) DB::table('assay_runs')->where('invocation_id', 'matrix-agent')->value('id');
-    $this->actingAs($owner)->getJson(route('assay.runs.tree', $runId))
+    $response = $this->actingAs($admin)->getJson(route('assay.runs.tree', $runId))
         ->assertOk()
         ->assertSee('INSTRUCTIONS-MATRIX-CANARY')
         ->assertSee('MESSAGE-MATRIX-CANARY')
         ->assertSee('RUN-EXCEPTION-MATRIX-CANARY');
+
+    $tree = json_decode((string) $response->getContent(), false, flags: JSON_THROW_ON_ERROR);
+    assert($tree instanceof stdClass);
+    assert(is_array($tree->headers));
+    assert(is_array($tree->rows));
+    assert(isset($tree->rows[0]) && $tree->rows[0] instanceof stdClass);
+    assert(isset($tree->rows[0]->content_records) && is_array($tree->rows[0]->content_records));
+    assert(isset($tree->rows[0]->messages) && is_array($tree->rows[0]->messages));
+
+    $structuredRecords = array_values(array_filter(
+        $tree->rows[0]->content_records,
+        static fn (stdClass $record): bool => ($record->content->output_text ?? null) === 'OUTPUT-MATRIX-CANARY',
+    ));
+
+    expect($tree->headers)->toContain('run_id')
+        ->and($tree->rows)->toHaveCount(1)
+        ->and($tree->rows[0]->run_id)->toBe($runId)
+        ->and($tree->rows[0]->content_records)->toHaveCount(8)
+        ->and($structuredRecords)->toHaveCount(1)
+        ->and($structuredRecords[0]->type)->toBe('step.end')
+        ->and($structuredRecords[0]->content->structured_output->structured)->toBe('STRUCTURED-MATRIX-CANARY')
+        ->and($structuredRecords[0]->content->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($structuredRecords[0]->content->structured_output->empty_list)->toBe([])
+        ->and($tree->rows[0]->messages)->toHaveCount(1)
+        ->and($tree->rows[0]->messages[0]->hash)->toBe($hash)
+        ->and($tree->rows[0]->messages[0]->body->role)->toBe('assistant')
+        ->and($tree->rows[0]->messages[0]->body->text)->toBe('MESSAGE-MATRIX-CANARY')
+        ->and($tree->rows[0]->messages[0]->body->tool_calls)->toHaveCount(1)
+        ->and($tree->rows[0]->messages[0]->body->tool_calls[0]->name)->toBe('lookup')
+        ->and($tree->rows[0]->messages[0]->body->tool_calls[0]->arguments)->toBeInstanceOf(stdClass::class);
 });
 
 it('treats same-run duplicate record ids as immutable', function (): void {

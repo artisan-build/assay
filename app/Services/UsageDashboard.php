@@ -739,7 +739,7 @@ final class UsageDashboard
                 ->get(['record.type', 'content.content'])
                 ->map(static fn (stdClass $item): array => [
                     'type' => (string) $item->type,
-                    'content' => json_decode((string) $item->content, true, flags: JSON_THROW_ON_ERROR),
+                    'content' => json_decode((string) $item->content, false, flags: JSON_THROW_ON_ERROR),
                 ])->all();
             $messages = DB::table('assay_message_references as reference')
                 ->join('assay_messages as message', function ($join): void {
@@ -751,7 +751,7 @@ final class UsageDashboard
                 ->get(['reference.hash', 'message.body'])
                 ->map(static fn (stdClass $item): array => [
                     'hash' => (string) $item->hash,
-                    'body' => json_decode((string) $item->body, true, flags: JSON_THROW_ON_ERROR),
+                    'body' => json_decode((string) $item->body, false, flags: JSON_THROW_ON_ERROR),
                 ])->all();
 
             if ($content !== []) {
