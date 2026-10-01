@@ -63,7 +63,7 @@ it('uses server receive time for operation-specific staleness and recovers on la
 
     $agent = DB::table('assay_runs')->where('invocation_id', 'agent-stale')->sole();
     $operation = DB::table('assay_runs')->where('invocation_id', 'operation-stale')->sole();
-    $envelopes = DB::table('assay_envelopes')->orderBy('received_at')->get();
+    $envelopes = DB::table('assay_envelopes')->oldest('received_at')->get();
 
     expect($agent->status)->toBe('completed')
         ->and($agent->duration_ms)->toBe('1000.000')

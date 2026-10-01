@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 use App\Jobs\ProcessUsageEnvelope;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
+use ArtisanBuild\BuiltForCloud\Credential;
 use ArtisanBuild\BuiltForCloud\CredentialPurpose;
 use ArtisanBuild\BuiltForCloud\SubjectType;
 use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Tests\Support\EnvelopeFactory;
 
@@ -39,8 +41,8 @@ it('accepts only an active installation-owned ingest credential and derives app 
         return $job->appRef === 'credential-app'
             && ! str_contains($serialized, 'CONTENT-CANARY')
             && ! str_contains($serialized, 'forged-app')
-            && ! str_contains($serialized, 'Illuminate\\Http\\Request')
-            && ! str_contains($serialized, 'ArtisanBuild\\BuiltForCloud\\Credential')
+            && ! str_contains($serialized, Request::class)
+            && ! str_contains($serialized, Credential::class)
             && ! array_key_exists('content', $job->envelope['records'][0]);
     });
     expect($credential->credential->refresh()->last_used_at)->not->toBeNull();
