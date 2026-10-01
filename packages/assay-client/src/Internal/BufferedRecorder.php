@@ -101,7 +101,7 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
             throw new InvalidArgumentException('Assay sample_rate must be between 0 and 1.');
         }
 
-        foreach ($this->agentSampleRates as $agent => $rate) {
+        foreach ($this->agentSampleRates as $rate) {
             if (! is_finite($rate) || $rate < 0.0 || $rate > 1.0) {
                 throw new InvalidArgumentException('Assay agent sample rates must map non-empty class names to floats between 0 and 1.');
             }
