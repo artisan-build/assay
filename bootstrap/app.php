@@ -4,6 +4,7 @@ use App\Console\Commands\ConfigureBuiltForCloud;
 use App\Console\Commands\InstallFluxPro;
 use App\Console\Commands\OptimizeTailwind;
 use App\Console\Commands\ReconcileStaleRuns;
+use App\Http\Middleware\EnsureAssayAccess;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -21,7 +22,9 @@ return Application::configure(basePath: dirname(__DIR__))
         ReconcileStaleRuns::class,
     ])
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        $middleware->alias([
+            'assay.access' => EnsureAssayAccess::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
