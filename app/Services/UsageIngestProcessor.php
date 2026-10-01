@@ -368,7 +368,7 @@ final class UsageIngestProcessor
             ->whereNull('ended_at')
             ->whereNotIn('status', ['incomplete', 'failed_or_lost'])
             ->where('earliest_received_at', '<=', $cutoff)
-            ->orderBy('earliest_received_at')
+            ->oldest('earliest_received_at')
             ->orderBy('id')
             ->limit($limit)
             ->get(['id', 'earliest_received_at']);

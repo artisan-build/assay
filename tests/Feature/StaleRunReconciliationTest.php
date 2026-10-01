@@ -102,7 +102,7 @@ it('drains stale runs in bounded earliest-receive keyset order including non-sta
     ]))->handle($processor);
 
     $orderedIds = DB::table('assay_runs')
-        ->orderBy('earliest_received_at')
+        ->oldest('earliest_received_at')
         ->orderBy('id')
         ->pluck('id')
         ->all();
@@ -111,7 +111,7 @@ it('drains stale runs in bounded earliest-receive keyset order including non-sta
 
     $reconciledIds = DB::table('assay_runs')
         ->whereIn('status', ['incomplete', 'failed_or_lost'])
-        ->orderBy('earliest_received_at')
+        ->oldest('earliest_received_at')
         ->orderBy('id')
         ->pluck('id')
         ->all();
