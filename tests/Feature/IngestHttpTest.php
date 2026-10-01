@@ -38,7 +38,7 @@ it('accepts only an active installation-owned ingest credential and derives app 
     $envelope = EnvelopeFactory::envelope([
         EnvelopeFactory::record([
             'capture' => 'full',
-            'content' => ['secret' => 'CONTENT-CANARY'],
+            'content' => ['instructions' => 'ALLOWED-CONTENT'],
         ]),
     ]);
     $body = json_decode(EnvelopeCodec::encode($envelope), true, flags: JSON_THROW_ON_ERROR);
@@ -53,11 +53,11 @@ it('accepts only an active installation-owned ingest credential and derives app 
         $serialized = serialize($job);
 
         return $job->appRef === 'credential-app'
-            && ! str_contains($serialized, 'CONTENT-CANARY')
+            && str_contains($serialized, 'ALLOWED-CONTENT')
             && ! str_contains($serialized, 'forged-app')
             && ! str_contains($serialized, Request::class)
             && ! str_contains($serialized, Credential::class)
-            && ! array_key_exists('content', $job->envelope['records'][0]);
+            && $job->envelope['records'][0]['content'] === ['instructions' => 'ALLOWED-CONTENT'];
     });
     expect($credential->credential->refresh()->last_used_at)->not->toBeNull();
 });

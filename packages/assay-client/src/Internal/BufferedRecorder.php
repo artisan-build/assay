@@ -10,13 +10,20 @@ use ArtisanBuild\AssayClient\Recorder;
 use ArtisanBuild\AssayClient\RecordInput;
 use ArtisanBuild\AssayClient\SourceInfo;
 use ArtisanBuild\AssayContracts\Client;
+use ArtisanBuild\AssayContracts\Content;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
+use ArtisanBuild\AssayContracts\Operation;
+use ArtisanBuild\AssayContracts\RecordType;
 use ArtisanBuild\AssayContracts\RecordV1;
 use ArtisanBuild\AssayContracts\Source;
 use ArtisanBuild\AssayContracts\Timestamp;
 use ArtisanBuild\AssayContracts\UuidV7;
+use ArtisanBuild\BuiltForCloudContracts\OutboundPayload;
+use ArtisanBuild\BuiltForCloudContracts\PayloadDisposition;
+use ArtisanBuild\BuiltForCloudContracts\PayloadFilter;
 use DateTimeImmutable;
+use Illuminate\Contracts\Container\Container;
 use InvalidArgumentException;
 use Throwable;
 
@@ -24,6 +31,9 @@ final class BufferedRecorder implements Recorder
 {
     /** @var list<RecordV1> */
     private array $records = [];
+
+    /** @var array<string, array<string, true>> */
+    private array $sentMessageHashes = [];
 
     public function __construct(
         private readonly string $driver,
@@ -35,6 +45,7 @@ final class BufferedRecorder implements Recorder
         private readonly int $retryForSeconds,
         private readonly DropCounter $drops,
         private readonly EnvelopeDispatcher $dispatcher,
+        private readonly Container $app,
         private readonly RecordInputProjector $projector = new RecordInputProjector,
         private readonly int $maxBatchBytes = 4_194_304,
     ) {
@@ -54,7 +65,24 @@ final class BufferedRecorder implements Recorder
     public function record(RecordInput $input): void
     {
         try {
-            $record = $this->projector->project($input, $this->driver);
+            $projected = $this->projector->project($input, $this->driver);
+            $record = $projected;
+
+            try {
+                $record = $this->filter($record);
+            } catch (Throwable) {
+                $this->incrementHookSafely();
+
+                return;
+            }
+
+            if ($record === null) {
+                $this->incrementHookSafely();
+
+                return;
+            }
+
+            $record = $this->deduplicateMessages($record);
 
             if (! $this->fits([$record])) {
                 $this->incrementTransportSafely();
@@ -73,7 +101,93 @@ final class BufferedRecorder implements Recorder
             }
         } catch (Throwable) {
             $this->incrementTransportSafely();
+        } finally {
+            if (isset($projected)
+                && $projected->type === RecordType::RunEnd
+                && $projected->operation === Operation::Agent
+                && $projected->invocationId !== null) {
+                unset($this->sentMessageHashes[$projected->invocationId]);
+            }
         }
+    }
+
+    private function filter(RecordV1 $record): ?RecordV1
+    {
+        $payload = new OutboundPayload(
+            product: 'assay',
+            kind: $record->type->value,
+            schemaVersion: 1,
+            disposition: PayloadDisposition::Droppable,
+            data: $record->toArray(),
+            attributes: [
+                'subject' => $record->subject,
+                'operation' => $record->operation?->value,
+                'agent' => $record->agent,
+                'capture' => $record->capture->value,
+            ],
+        );
+        $filtered = $this->app->make(PayloadFilter::class)->filter($payload);
+
+        if ($filtered === null) {
+            return null;
+        }
+
+        if (! is_array($filtered->data)) {
+            throw new InvalidArgumentException('The Assay payload filter must return record data as an array.');
+        }
+
+        return (new HookBoundary)->restore($record, $filtered->data);
+    }
+
+    private function deduplicateMessages(RecordV1 $record): RecordV1
+    {
+        if ($record->type !== RecordType::StepStart || $record->content === null || $record->invocationId === null) {
+            return $record;
+        }
+
+        $content = $record->content->toArray();
+        $hashes = $content['message_hashes'] ?? [];
+        $messages = $content['new_messages'] ?? [];
+        $ordered = [];
+        $new = [];
+
+        foreach ($hashes as $hash) {
+            $message = $messages[$hash] ?? null;
+
+            if (is_array($message)) {
+                $hash = hash('sha256', json_encode(
+                    $this->canonicalize($message),
+                    JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                ));
+
+                if (! isset($this->sentMessageHashes[$record->invocationId][$hash])) {
+                    $new[$hash] = $message;
+                    $this->sentMessageHashes[$record->invocationId][$hash] = true;
+                }
+            }
+
+            $ordered[] = $hash;
+        }
+
+        $content['message_hashes'] = $ordered;
+        $content['new_messages'] = $new === [] ? (object) [] : $new;
+
+        return (new HookBoundary)->restore($record, ['content' => $content]);
+    }
+
+    private function canonicalize(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
+        }
+
+        ksort($value, SORT_STRING);
+
+        return array_map(fn (mixed $item): mixed => $this->canonicalize($item), $value);
     }
 
     public function flush(): void
@@ -140,6 +254,15 @@ final class BufferedRecorder implements Recorder
     {
         try {
             $this->drops->incrementTransport();
+        } catch (Throwable) {
+            // Telemetry cannot escape into the host application.
+        }
+    }
+
+    private function incrementHookSafely(): void
+    {
+        try {
+            $this->drops->incrementHook();
         } catch (Throwable) {
             // Telemetry cannot escape into the host application.
         }

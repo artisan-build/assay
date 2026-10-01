@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use ArtisanBuild\AssayClient\Internal\HookBoundary;
-use ArtisanBuild\AssayContracts\Approval;
 use ArtisanBuild\AssayContracts\CaptureMode;
 use ArtisanBuild\AssayContracts\Content;
 use ArtisanBuild\AssayContracts\FailureCapture;
@@ -35,7 +34,7 @@ it('restores every usage-class field after a hook and accepts only content chang
             subject: 'user:1',
             usage: new Usage(inputTokens: 3),
             model: new Model(requested: 'model-a', responded: 'model-b', provider: 'provider-a'),
-            content: new Content(['body' => 'before']),
+            content: new Content(['exception_message' => 'before']),
             agent: 'App\\Ai\\Agent',
             finishReason: FinishReason::Error,
             outcome: Outcome::Failed,
@@ -46,7 +45,7 @@ it('restores every usage-class field after a hook and accepts only content chang
         new RecordV1(
             recordId: UuidV7::generate(),
             source: 'fake',
-            type: RecordType::ToolApproval,
+            type: RecordType::ToolEnd,
             operation: Operation::Agent,
             at: new Timestamp('2026-09-30T12:34:57.123456Z'),
             capture: CaptureMode::Full,
@@ -55,10 +54,10 @@ it('restores every usage-class field after a hook and accepts only content chang
             attempt: 2,
             step: 4,
             toolInvocationId: 'tool-1',
-            content: new Content(['body' => 'before']),
+            content: new Content(['result' => 'before']),
             agent: 'App\\Ai\\Agent',
             tool: 'lookup_order',
-            approval: Approval::Approved,
+            outcome: Outcome::Completed,
         ),
         new RecordV1(
             recordId: UuidV7::generate(),
@@ -69,7 +68,7 @@ it('restores every usage-class field after a hook and accepts only content chang
             capture: CaptureMode::Full,
             sampled: true,
             invocationId: 'image-1',
-            content: new Content(['body' => 'before']),
+            content: new Content(['count' => 1]),
             durationMs: 4.5,
             outcome: Outcome::Completed,
         ),
@@ -79,7 +78,13 @@ it('restores every usage-class field after a hook and accepts only content chang
     foreach ($records as $original) {
         $protected = $original->toArray();
         $filtered = array_fill_keys(array_keys($protected), 'hook-corruption');
-        $filtered['content'] = ['body' => 'after'];
+        $filtered['content'] = match ($original->type) {
+            RecordType::RunEnd => $original->operation === Operation::Agent
+                ? ['exception_message' => 'after']
+                : ['count' => 2],
+            RecordType::ToolEnd => ['result' => 'after'],
+            default => throw new LogicException('Unexpected fixture.'),
+        };
 
         $restoredRecord = $boundary->restore($original, $filtered);
         $restored = $restoredRecord->toArray();
@@ -87,7 +92,7 @@ it('restores every usage-class field after a hook and accepts only content chang
         unset($restored['content'], $expected['content']);
 
         expect($restored)->toBe($expected)
-            ->and($restoredRecord->content?->toArray())->toBe(['body' => 'after']);
+            ->and($restoredRecord->content?->toArray())->toBe($filtered['content']);
     }
 });
 
@@ -102,7 +107,7 @@ it('lets a hook remove content without changing protected fields', function (): 
         sampled: true,
         invocationId: 'run-1',
         attempt: 1,
-        content: new Content(['body' => 'before']),
+        content: new Content(['instructions' => 'before']),
     );
     $expected = $original->toArray();
     unset($expected['content']);

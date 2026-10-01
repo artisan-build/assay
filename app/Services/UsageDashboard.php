@@ -547,7 +547,8 @@ final class UsageDashboard
                             AND (r.operation = 'agent' OR r.operation IS NULL)
                     ) AS incomplete_agent_count,
                     COUNT(r.id) FILTER (WHERE r.subject IS NULL) AS no_subject_count,
-                    COUNT(r.id) AS run_count
+                    COUNT(r.id) AS run_count,
+                    COUNT(r.id) FILTER (WHERE r.content_incomplete) AS content_incomplete_count
                 FROM app_scope a
                 LEFT JOIN assay_runs r ON r.app_id = a.id
                 GROUP BY a.id
@@ -619,14 +620,15 @@ final class UsageDashboard
                     a.app_ref,
                     'content_incomplete_runs',
                     'app',
-                    'not_applicable',
+                    rh.content_incomplete_count::text,
                     NULL::text,
                     NULL::text,
                     NULL::text,
                     NULL::text,
                     NULL::text,
-                    'not_applicable'
+                    'reported'
                 FROM app_scope a
+                INNER JOIN run_health rh ON rh.app_id = a.id
 
                 UNION ALL
 
@@ -698,7 +700,8 @@ final class UsageDashboard
         );
     }
 
-    public function runTree(string $runId): DashboardTable
+    /** @return array{headers: list<string>, rows: list<array<string, mixed>>} */
+    public function runTree(string $runId): array
     {
         $rows = $this->rows(<<<'SQL'
             WITH RECURSIVE run_tree AS (
@@ -727,8 +730,42 @@ final class UsageDashboard
             ORDER BY started_at NULLS LAST, id
             SQL, [$runId]);
 
-        return new DashboardTable(
-            [
+        foreach ($rows as &$row) {
+            $content = DB::table('assay_record_content as content')
+                ->join('assay_records as record', 'record.id', '=', 'content.record_id')
+                ->where('content.run_id', $row['run_id'])
+                ->orderBy('record.occurred_at')
+                ->orderBy('record.id')
+                ->get(['record.type', 'content.content'])
+                ->map(static fn (stdClass $item): array => [
+                    'type' => (string) $item->type,
+                    'content' => json_decode((string) $item->content, true, flags: JSON_THROW_ON_ERROR),
+                ])->all();
+            $messages = DB::table('assay_message_references as reference')
+                ->join('assay_messages as message', function ($join): void {
+                    $join->on('message.run_id', '=', 'reference.run_id')
+                        ->on('message.hash', '=', 'reference.hash');
+                })
+                ->where('reference.run_id', $row['run_id'])
+                ->orderBy('reference.id')
+                ->get(['reference.hash', 'message.body'])
+                ->map(static fn (stdClass $item): array => [
+                    'hash' => (string) $item->hash,
+                    'body' => json_decode((string) $item->body, true, flags: JSON_THROW_ON_ERROR),
+                ])->all();
+
+            if ($content !== []) {
+                $row['content_records'] = $content;
+            }
+
+            if ($messages !== []) {
+                $row['messages'] = $messages;
+            }
+        }
+        unset($row);
+
+        return [
+            'headers' => [
                 'run_id',
                 'parent_run_id',
                 'parent_tool_invocation_id',
@@ -742,20 +779,8 @@ final class UsageDashboard
                 'status',
                 'failure_class',
             ],
-            $rows,
-            [
-                'parent_tool_invocation_id',
-                'invocation_id',
-                'operation',
-                'agent',
-                'provider',
-                'requested_model',
-                'responded_model',
-                'subject',
-                'status',
-                'failure_class',
-            ],
-        );
+            'rows' => $rows,
+        ];
     }
 
     private function limit(int $limit): int

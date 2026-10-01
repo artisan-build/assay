@@ -97,6 +97,21 @@ final class UsageIngestProcessor
         ]);
 
         if ($inserted === 0) {
+            if (isset($record['invocation_id'], $record['content'])) {
+                $existingRecordId = DB::table('assay_records')
+                    ->where('app_id', $appId)
+                    ->where('record_id', $record['record_id'])
+                    ->value('id');
+                $existingRunId = DB::table('assay_runs')
+                    ->where('app_id', $appId)
+                    ->where('invocation_id', $record['invocation_id'])
+                    ->value('id');
+
+                if (is_string($existingRecordId) && is_string($existingRunId)) {
+                    $this->content($existingRecordId, $existingRunId, $record);
+                }
+            }
+
             return;
         }
 
@@ -124,6 +139,10 @@ final class UsageIngestProcessor
 
         if (isset($record['usage'])) {
             $this->usage($recordRowId, $runId, $attemptId, $record);
+        }
+
+        if (isset($record['content'])) {
+            $this->content($recordRowId, $runId, $record);
         }
 
         $this->reconcileRun($runId, CarbonImmutable::parse($receivedAt));
@@ -357,6 +376,59 @@ final class UsageIngestProcessor
                 'responded_model' => $record['model']['responded'] ?? null,
             ]);
         }
+    }
+
+    /** @param array<string, mixed> $record */
+    private function content(string $recordId, string $runId, array $record): void
+    {
+        $content = $record['content'];
+
+        if (! is_array($content)) {
+            throw new RuntimeException('Validated record content must be an array.');
+        }
+
+        if ($record['type'] === 'step.start') {
+            foreach ($content['message_hashes'] ?? [] as $position => $hash) {
+                DB::table('assay_message_references')->insertOrIgnore([
+                    'record_id' => $recordId,
+                    'run_id' => $runId,
+                    'position' => $position,
+                    'hash' => $hash,
+                ]);
+            }
+
+            foreach ($content['new_messages'] ?? [] as $hash => $body) {
+                DB::table('assay_messages')->insertOrIgnore([
+                    'id' => (string) Str::uuid(),
+                    'run_id' => $runId,
+                    'hash' => $hash,
+                    'body' => json_encode($body, JSON_THROW_ON_ERROR),
+                ]);
+            }
+
+            unset($content['new_messages']);
+        }
+
+        if ($content !== []) {
+            DB::table('assay_record_content')->insertOrIgnore([
+                'id' => (string) Str::uuid(),
+                'record_id' => $recordId,
+                'run_id' => $runId,
+                'content' => json_encode($content, JSON_THROW_ON_ERROR),
+            ]);
+        }
+
+        $unresolved = DB::table('assay_message_references as reference')
+            ->where('reference.run_id', $runId)
+            ->whereNotExists(function ($query): void {
+                $query->selectRaw('1')
+                    ->from('assay_messages as message')
+                    ->whereColumn('message.run_id', 'reference.run_id')
+                    ->whereColumn('message.hash', 'reference.hash');
+            })
+            ->exists();
+
+        DB::table('assay_runs')->where('id', $runId)->update(['content_incomplete' => $unresolved]);
     }
 
     public function reconcileStale(?CarbonImmutable $asOf = null, ?int $limit = null): int

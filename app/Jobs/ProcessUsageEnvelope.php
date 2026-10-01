@@ -36,7 +36,10 @@ final class ProcessUsageEnvelope implements ShouldQueue
             'dropped_hook_total' => $envelope->droppedHookTotal,
             'records' => array_map(static function (RecordV1 $record): array {
                 $data = $record->toArray();
-                unset($data['content']);
+
+                if ($record->content !== null) {
+                    $data['content'] = $record->content->toArray();
+                }
 
                 return $data;
             }, $envelope->records),

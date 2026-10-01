@@ -78,7 +78,7 @@ final class UsageDashboardController extends Controller
         EnsureAssayAccess::decision($request);
         $table = $this->dashboard->runTree($run);
 
-        abort_if($table->rows === [], 404);
+        abort_if($table['rows'] === [], 404);
 
         return response()->json($table);
     }

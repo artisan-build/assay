@@ -9,6 +9,7 @@
 <body>
 <main data-testid="dashboard">
     <h1>Usage dashboard</h1>
+    <p><a href="{{ route('assay.risk') }}">Full-capture risk and operations guide</a></p>
 
     <form method="get" action="{{ route('assay.dashboard') }}" data-testid="dashboard-metric-selector">
         <label for="metric">Usage metric</label>

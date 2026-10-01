@@ -350,8 +350,8 @@ it('projects discriminating PostgreSQL data across all seven dashboard tables', 
         'app' => '=formula-app',
         'measure' => 'content_incomplete_runs',
         'scope' => 'app',
-        'value' => 'not_applicable',
-        'status' => 'not_applicable',
+        'value' => '0',
+        'status' => 'reported',
     ])->and(collect($pipeline)->where('app', '=formula-app')->firstWhere('measure', 'incomplete_agent_runs')['value'])->toBe('1');
 
     $clockSkew = collect($pipeline)->where('app', '=formula-app')->firstWhere('measure', 'client_clock_skew');

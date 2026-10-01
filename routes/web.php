@@ -3,11 +3,13 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\ContentAccessController;
+use App\Http\Controllers\RiskController;
 use App\Http\Controllers\UsageDashboardController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('assay.access:usage')->group(function (): void {
     Route::get('/assay/dashboard', [UsageDashboardController::class, 'index'])->name('assay.dashboard');
+    Route::get('/assay/risk', RiskController::class)->name('assay.risk');
 
     foreach ([
         'usage-over-time',
