@@ -331,24 +331,24 @@ it('checks only terminal attempt step sums and flags only the greater-than direc
         ->and((bool) DB::table('assay_runs')->where('invocation_id', 'checksum-greater')->value('checksum_mismatch'))->toBeTrue();
 });
 
-it('never persists content raw bodies or secret canaries in ingest tables or logs', function (): void {
+it('never persists additive excluded fields or secret canaries in usage mode or logs', function (): void {
     Log::spy();
-    $canary = 'PRIVATE-CONTENT-CANARY';
+    $canary = 'EXCLUDED-PROVIDER-OPTION-CANARY';
     $record = EnvelopeFactory::record([
-        'capture' => 'full',
-        'content' => ['prompt' => $canary, 'credential' => 'SECRET-CANARY'],
-        'provider_options' => ['api_key' => 'SECRET-CANARY'],
+        'provider_options' => ['api_key' => $canary],
     ]);
 
     processEnvelope(EnvelopeFactory::envelope([$record]));
 
     foreach (DB::select("select tablename from pg_tables where schemaname = 'public' and tablename like 'assay_%'") as $table) {
         $rows = DB::table($table->tablename)->get();
-        expect(json_encode($rows, JSON_THROW_ON_ERROR))->not->toContain($canary)->not->toContain('SECRET-CANARY');
+        expect(json_encode($rows, JSON_THROW_ON_ERROR))->not->toContain($canary);
     }
 
     foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug', 'log'] as $level) {
         Log::shouldNotHaveReceived($level);
     }
-    expect(DB::table('assay_records')->count())->toBe(1);
+    expect(DB::table('assay_records')->count())->toBe(1)
+        ->and(DB::table('assay_record_content')->count())->toBe(0)
+        ->and(DB::table('assay_messages')->count())->toBe(0);
 });

@@ -10,7 +10,6 @@ use ArtisanBuild\AssayClient\Recorder;
 use ArtisanBuild\AssayClient\RecordInput;
 use ArtisanBuild\AssayClient\SourceInfo;
 use ArtisanBuild\AssayContracts\Client;
-use ArtisanBuild\AssayContracts\Content;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
 use ArtisanBuild\AssayContracts\Operation;
@@ -136,7 +135,52 @@ final class BufferedRecorder implements Recorder
             throw new InvalidArgumentException('The Assay payload filter must return record data as an array.');
         }
 
-        return (new HookBoundary)->restore($record, $filtered->data);
+        return (new HookBoundary)->restore($record, $this->rehashMessages($filtered->data));
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function rehashMessages(array $data): array
+    {
+        if (($data['type'] ?? null) !== RecordType::StepStart->value || ! isset($data['content'])) {
+            return $data;
+        }
+
+        $content = json_decode(json_encode($data['content'], JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+
+        if (! is_array($content)
+            || ! isset($content['message_hashes'], $content['new_messages'])
+            || ! is_array($content['message_hashes'])
+            || ! is_array($content['new_messages'])) {
+            return $data;
+        }
+
+        $replacements = [];
+        $messages = [];
+
+        foreach ($content['new_messages'] as $hash => $message) {
+            if (! is_string($hash) || ! is_array($message)) {
+                continue;
+            }
+
+            $replacement = hash('sha256', json_encode(
+                $this->canonicalize($message),
+                JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            ));
+            $replacements[$hash] = $replacement;
+            $messages[$replacement] = $message;
+        }
+
+        $content['message_hashes'] = array_map(
+            static fn (mixed $hash): mixed => is_string($hash) ? ($replacements[$hash] ?? $hash) : $hash,
+            $content['message_hashes'],
+        );
+        $content['new_messages'] = $messages === [] ? (object) [] : $messages;
+        $data['content'] = $content;
+
+        return $data;
     }
 
     private function deduplicateMessages(RecordV1 $record): RecordV1

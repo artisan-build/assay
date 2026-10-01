@@ -278,8 +278,8 @@ final readonly class Content implements JsonSerializable
     }
 
     /**
-     * @param list<string> $keys
-     * @param callable(array<string, mixed>, string): void $validate
+     * @param  list<string>  $keys
+     * @param  callable(array<string, mixed>, string): void  $validate
      */
     private static function objectList(mixed $value, string $path, array $keys, callable $validate): void
     {
@@ -319,7 +319,10 @@ final readonly class Content implements JsonSerializable
         }
     }
 
-    /** @param array<string, mixed> $data @param list<string> $allowed */
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  list<string>  $allowed
+     */
     private static function allowedKeys(array $data, array $allowed, string $path): void
     {
         $unknown = array_diff(array_keys($data), $allowed);

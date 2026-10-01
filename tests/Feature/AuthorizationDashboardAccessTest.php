@@ -61,6 +61,7 @@ function pr5UsageUrls(): array
         'assay.dashboard.latency.csv',
         'assay.dashboard.pipeline-health',
         'assay.dashboard.pipeline-health.csv',
+        'assay.risk',
     ];
 
     return array_map(static fn (string $name): string => route($name, absolute: false), $names);
@@ -311,6 +312,7 @@ it('maps every explicit PR5 route to the central ability middleware', function (
         'assay.dashboard.latency.csv' => 'assay.access:usage',
         'assay.dashboard.pipeline-health' => 'assay.access:usage',
         'assay.dashboard.pipeline-health.csv' => 'assay.access:usage',
+        'assay.risk' => 'assay.access:usage',
         'assay.runs.tree' => 'assay.access:content',
         'assay.access.index' => 'assay.access:content',
         'assay.access.set' => 'assay.access:content',

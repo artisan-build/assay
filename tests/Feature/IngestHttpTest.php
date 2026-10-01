@@ -13,6 +13,7 @@ use ArtisanBuild\BuiltForCloud\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Tests\Support\EnvelopeFactory;
 
@@ -233,6 +234,39 @@ it('rejects malformed and newer envelopes with bounded canary-free messages', fu
     'invalid shape' => ['{"envelope_version":1,"BODY-CANARY":"SECRET-CANARY"}', 'Envelope is invalid.'],
     'newer' => ['{"envelope_version":2,"BODY-CANARY":"SECRET-CANARY"}', 'Upgrade your Assay server.'],
 ]);
+
+it('rejects invalid content before dispatch or writes without logging the request body', function (): void {
+    Bus::fake();
+    Log::spy();
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'invalid-content-app',
+    ]);
+    $body = json_decode(EnvelopeCodec::encode(EnvelopeFactory::envelope([
+        EnvelopeFactory::record(),
+    ])), true, flags: JSON_THROW_ON_ERROR);
+    $body['records'][0]['capture'] = 'full';
+    $body['records'][0]['content'] = ['unsupported' => 'INVALID-CONTENT-BODY-CANARY'];
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], json_encode($body, JSON_THROW_ON_ERROR))
+        ->assertUnprocessable()
+        ->assertExactJson(['message' => 'Envelope is invalid.'])
+        ->assertDontSee('INVALID-CONTENT-BODY-CANARY');
+
+    Bus::assertNothingDispatched();
+    expect(DB::table('assay_apps')->count())->toBe(0)
+        ->and(DB::table('assay_envelopes')->count())->toBe(0)
+        ->and(DB::table('assay_records')->count())->toBe(0)
+        ->and(DB::table('assay_record_content')->count())->toBe(0);
+
+    foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug', 'log'] as $level) {
+        Log::shouldNotHaveReceived($level);
+    }
+});
 
 it('publishes envelope capabilities without authentication', function (): void {
     $this->getJson('/capabilities')

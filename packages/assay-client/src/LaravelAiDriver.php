@@ -59,8 +59,9 @@ use Laravel\Ai\Events\ToolFailed;
 use Laravel\Ai\Events\ToolInvoked;
 use Laravel\Ai\Events\TranscriptionGenerated;
 use Laravel\Ai\Gateway\ParentInvocation;
-use Laravel\Ai\Messages\Message;
+use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Messages\AssistantMessage;
+use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Messages\ToolResultMessage;
 use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\ObjectSchema;
@@ -70,14 +71,13 @@ use Laravel\Ai\Prompts\ClassificationPrompt;
 use Laravel\Ai\Prompts\EmbeddingsPrompt;
 use Laravel\Ai\Prompts\ImagePrompt;
 use Laravel\Ai\Prompts\RerankingPrompt;
+use Laravel\Ai\Responses\ClassificationResponse;
 use Laravel\Ai\Responses\Data\ImageUsage;
-use Laravel\Ai\Responses\Data\ToolCall;
-use Laravel\Ai\Responses\Data\ToolResult;
 use Laravel\Ai\Responses\Data\RerankingUsage;
 use Laravel\Ai\Responses\Data\TextUsage;
+use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\TranscriptionUsage;
 use Laravel\Ai\Responses\Data\Usage as SourceUsage;
-use Laravel\Ai\Responses\ClassificationResponse;
 use Laravel\Ai\Responses\ImageResponse;
 use Laravel\Ai\Responses\RerankingResponse;
 use Laravel\Ai\Responses\TranscriptionResponse;
@@ -545,7 +545,10 @@ final class LaravelAiDriver implements CaptureDriver
         return $content;
     }
 
-    /** @param list<Message> $messages @return array<string, mixed> */
+    /**
+     * @param  array<array-key, Message>  $messages
+     * @return array<string, mixed>
+     */
     private function stepMessages(array $messages): array
     {
         $normalized = [];
@@ -553,13 +556,11 @@ final class LaravelAiDriver implements CaptureDriver
         foreach ($messages as $message) {
             if ($message instanceof ToolResultMessage) {
                 foreach ($message->toolResults as $result) {
-                    if ($result instanceof ToolResult) {
-                        $normalized[] = [
-                            'role' => 'tool',
-                            'text' => $result->text(),
-                            'tool_call_id' => $result->id,
-                        ];
-                    }
+                    $normalized[] = [
+                        'role' => 'tool',
+                        'text' => $result->text(),
+                        'tool_call_id' => $result->id,
+                    ];
                 }
 
                 continue;
@@ -601,7 +602,7 @@ final class LaravelAiDriver implements CaptureDriver
     }
 
     /** @return array<string, mixed> */
-    private function stepEndContent(object $response): array
+    private function stepEndContent(StepResponse $response): array
     {
         $content = ['output_text' => $response->text];
 
@@ -618,7 +619,10 @@ final class LaravelAiDriver implements CaptureDriver
         return $content;
     }
 
-    /** @param array<array-key, mixed> $calls @return list<array{id: string, name: string, arguments: mixed}> */
+    /**
+     * @param  array<array-key, mixed>  $calls
+     * @return list<array{id: string, name: string, arguments: mixed}>
+     */
     private function toolCalls(array $calls): array
     {
         $normalized = [];

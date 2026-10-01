@@ -79,6 +79,51 @@ it('resolves the released filter for every record and restores all protected fie
         ->and($drops->hookTotal())->toBe(0);
 });
 
+it('observes a filter rebind after recording has started', function (): void {
+    $container = new Container;
+    $dispatcher = new CollectingDispatcher;
+    $recorder = filteredRecorder($container, new InMemoryDropCounter, $dispatcher);
+    $filter = static fn (string $instructions): PayloadFilter => new class($instructions) implements PayloadFilter
+    {
+        public function __construct(private readonly string $instructions) {}
+
+        public function filter(OutboundPayload $payload): OutboundPayload
+        {
+            $data = $payload->data;
+            $data['content'] = ['instructions' => $this->instructions];
+
+            return new OutboundPayload(
+                $payload->product,
+                $payload->kind,
+                $payload->schemaVersion,
+                $payload->disposition,
+                $data,
+                $payload->attributes,
+            );
+        }
+    };
+    $record = static fn (string $invocation): RunInput => new RunInput(
+        RecordType::RunStart,
+        $invocation,
+        1,
+        new DateTimeImmutable,
+        capture: CaptureMode::Full,
+        sampled: true,
+        content: new Content(['instructions' => 'original']),
+    );
+
+    $container->instance(PayloadFilter::class, $filter('first'));
+    $recorder->record($record('run-1'));
+    $container->instance(PayloadFilter::class, $filter('second'));
+    $recorder->record($record('run-2'));
+    $recorder->flush();
+
+    $records = EnvelopeCodec::decode($dispatcher->dispatched[0]['json'])->records;
+
+    expect($records[0]->content?->toArray())->toBe(['instructions' => 'first'])
+        ->and($records[1]->content?->toArray())->toBe(['instructions' => 'second']);
+});
+
 it('silently drops null and throwing hook results exactly once', function (string $behavior): void {
     $container = new Container;
     $drops = new InMemoryDropCounter;
@@ -120,7 +165,9 @@ it('hashes post-hook messages, deduplicates bodies, and prunes at run end', func
 
             if (($data['type'] ?? null) === 'step.start') {
                 foreach ($data['content']->new_messages as $hash => $message) {
-                    $data['content']->new_messages->{$hash}->text = 'masked';
+                    if ($message->text === 'first secret') {
+                        $data['content']->new_messages->{$hash}->text = 'masked';
+                    }
                 }
             }
 
@@ -136,9 +183,14 @@ it('hashes post-hook messages, deduplicates bodies, and prunes at run end', func
     });
     $recorder = filteredRecorder($container, $drops, $dispatcher);
 
-    $step = static function (int $number, string $text): StepInput {
-        $message = ['role' => 'user', 'text' => $text];
-        $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    $step = static function (int $number, array $texts): StepInput {
+        $messages = [];
+
+        foreach ($texts as $text) {
+            $message = ['role' => 'user', 'text' => $text];
+            $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            $messages[$hash] = $message;
+        }
 
         return new StepInput(
             type: RecordType::StepStart,
@@ -148,12 +200,12 @@ it('hashes post-hook messages, deduplicates bodies, and prunes at run end', func
             at: new DateTimeImmutable,
             capture: CaptureMode::Full,
             sampled: true,
-            content: new Content(['message_hashes' => [$hash], 'new_messages' => [$hash => $message]]),
+            content: new Content(['message_hashes' => array_keys($messages), 'new_messages' => $messages]),
         );
     };
 
-    $recorder->record($step(0, 'first secret'));
-    $recorder->record($step(1, 'second secret'));
+    $recorder->record($step(0, ['first secret']));
+    $recorder->record($step(1, ['first secret', 'second secret']));
     $recorder->record(new RunInput(
         type: RecordType::RunEnd,
         invocationId: 'run-1',
@@ -163,18 +215,20 @@ it('hashes post-hook messages, deduplicates bodies, and prunes at run end', func
         sampled: true,
         outcome: Outcome::Completed,
     ));
-    $recorder->record($step(2, 'third secret'));
+    $recorder->record($step(2, ['first secret']));
     $recorder->flush();
 
     $records = EnvelopeCodec::decode($dispatcher->dispatched[0]['json'])->records;
     $first = $records[0]->content?->toArray();
-    $second = $records[1]->content?->toArray();
+    $secondContent = $records[1]->content?->toArray();
     $afterPrune = $records[3]->content?->toArray();
     $masked = ['role' => 'user', 'text' => 'masked'];
     $expectedHash = hash('sha256', json_encode(['role' => 'user', 'text' => 'masked'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    $secondMessage = ['role' => 'user', 'text' => 'second secret'];
+    $secondHash = hash('sha256', json_encode($secondMessage, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 
     expect($first)->toBe(['message_hashes' => [$expectedHash], 'new_messages' => [$expectedHash => $masked]])
-        ->and($second)->toBe(['message_hashes' => [$expectedHash], 'new_messages' => []])
+        ->and($secondContent)->toBe(['message_hashes' => [$expectedHash, $secondHash], 'new_messages' => [$secondHash => $secondMessage]])
         ->and($afterPrune)->toBe(['message_hashes' => [$expectedHash], 'new_messages' => [$expectedHash => $masked]])
-        ->and($dispatcher->dispatched[0]['json'])->not->toContain('first secret', 'second secret', 'third secret');
+        ->and($dispatcher->dispatched[0]['json'])->not->toContain('first secret');
 });

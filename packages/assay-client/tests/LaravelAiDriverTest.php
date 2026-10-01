@@ -21,9 +21,10 @@ use ArtisanBuild\AssayClient\Testing\DriverConformance;
 use ArtisanBuild\AssayClient\Testing\DriverScenario;
 use ArtisanBuild\AssayClient\Tests\Support\CollectingDispatcher;
 use ArtisanBuild\AssayClient\Tests\Support\InMemoryDropCounter;
+use ArtisanBuild\AssayClient\Transport\HttpTransport;
 use ArtisanBuild\AssayClient\Usage;
-use ArtisanBuild\AssayContracts\Client;
 use ArtisanBuild\AssayContracts\CaptureMode;
+use ArtisanBuild\AssayContracts\Client;
 use ArtisanBuild\AssayContracts\FinishReason as ContractFinishReason;
 use ArtisanBuild\AssayContracts\Operation;
 use ArtisanBuild\AssayContracts\Outcome;
@@ -31,6 +32,8 @@ use ArtisanBuild\AssayContracts\RecordType;
 use ArtisanBuild\AssayContracts\ReplayInputOmission;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Events\Dispatcher;
+use Illuminate\Http\Client\Request as HttpRequest;
+use Illuminate\Support\Facades\Http;
 use Laravel\Ai\Agents\SummarizeAgent;
 use Laravel\Ai\Ai;
 use Laravel\Ai\AiManager;
@@ -88,17 +91,17 @@ use Laravel\Ai\Prompts\TranscriptionPrompt;
 use Laravel\Ai\Responses\AgentResponse;
 use Laravel\Ai\Responses\AudioResponse;
 use Laravel\Ai\Responses\ClassificationResponse;
-use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\BooleanAnswer;
+use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\GeneratedImage;
 use Laravel\Ai\Responses\Data\ImageUsage;
 use Laravel\Ai\Responses\Data\Meta;
-use Laravel\Ai\Responses\Data\RerankingUsage;
 use Laravel\Ai\Responses\Data\RankedDocument;
+use Laravel\Ai\Responses\Data\RerankingUsage;
 use Laravel\Ai\Responses\Data\Step;
 use Laravel\Ai\Responses\Data\TextUsage;
-use Laravel\Ai\Responses\Data\ToolResult;
 use Laravel\Ai\Responses\Data\ToolCall;
+use Laravel\Ai\Responses\Data\ToolResult;
 use Laravel\Ai\Responses\Data\TranscriptionUsage;
 use Laravel\Ai\Responses\Data\Usage as SourceUsage;
 use Laravel\Ai\Responses\EmbeddingsResponse;
@@ -918,7 +921,15 @@ it('projects full agent content while excluding replay provider attachment and s
     }
     $buffered->flush();
 
-    expect($dispatcher->dispatched[0]['json'])->not->toContain($excluded, 'provider-option-canary');
+    $json = $dispatcher->dispatched[0]['json'];
+    expect($json)->not->toContain($excluded, 'provider-option-canary');
+
+    config()->set('assay.url', 'https://assay.test/ingest');
+    config()->set('assay.token', 'test-token');
+    Http::fake(['https://assay.test/ingest' => Http::response(status: 202)]);
+    resolve(HttpTransport::class)->send($json);
+    Http::assertSent(static fn (HttpRequest $request): bool => $request->body() === $json
+        && ! str_contains($request->body(), $excluded));
 });
 
 it('projects every supported non-agent full-content shape without media vectors or provider options', function (): void {
@@ -971,4 +982,30 @@ it('projects every supported non-agent full-content shape without media vectors 
         ->and($ends['reranking']->content?->toArray())->toBe(['results' => [['index' => 1, 'score' => 0.9]]])
         ->and($ends['classification']->content?->toArray())->toBe(['answers' => ['flag' => ['probability' => 0.8]]])
         ->and(serialize($recorder->records))->not->toContain($excluded, base64_encode($excluded), 'EXCLUDED-CREDENTIAL');
+
+    $dispatcher = new CollectingDispatcher;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        new InMemoryDropCounter,
+        $dispatcher,
+        app(),
+    );
+    foreach ($recorder->records as $record) {
+        $buffered->record($record);
+    }
+    $buffered->flush();
+
+    expect($dispatcher->dispatched[0]['json'])->not->toContain(
+        $excluded,
+        base64_encode($excluded),
+        'EXCLUDED-CREDENTIAL',
+        'EXCLUDED-RERANK-CREDENTIAL',
+        'EXCLUDED-CLASSIFY-CREDENTIAL',
+    );
 });

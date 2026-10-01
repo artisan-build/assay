@@ -96,7 +96,7 @@ it('restores every usage-class field after a hook and accepts only content chang
     }
 });
 
-it('lets a hook remove content without changing protected fields', function (): void {
+it('lets a hook remove or empty content without changing protected fields', function (array $filtered): void {
     $original = new RecordV1(
         recordId: UuidV7::generate(),
         source: 'fake',
@@ -112,5 +112,8 @@ it('lets a hook remove content without changing protected fields', function (): 
     $expected = $original->toArray();
     unset($expected['content']);
 
-    expect((new HookBoundary)->restore($original, ['source' => 'changed'])->toArray())->toBe($expected);
-});
+    expect((new HookBoundary)->restore($original, $filtered)->toArray())->toBe($expected);
+})->with([
+    'removed' => [['source' => 'changed']],
+    'empty object' => [['content' => (object) []]],
+]);

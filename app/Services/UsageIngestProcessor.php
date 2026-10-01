@@ -17,9 +17,8 @@ final class UsageIngestProcessor
      */
     public function process(string $appRef, string $receivedAt, array $envelope): void
     {
-        $appId = $this->app($appRef, $envelope, $receivedAt);
-
-        DB::transaction(function () use ($appId, $receivedAt, $envelope): void {
+        DB::transaction(function () use ($appRef, $receivedAt, $envelope): void {
+            $appId = $this->app($appRef, $envelope, $receivedAt);
             $envelopeId = (string) Str::uuid();
 
             $inserted = DB::table('assay_envelopes')->insertOrIgnore([

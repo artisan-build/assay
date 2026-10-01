@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\InvalidEnvelope;
 use ArtisanBuild\AssayContracts\RecordV1;
 
@@ -64,8 +65,28 @@ it('round-trips every frozen content shape', function (array $payload): void {
     'classification end' => fn () => array_diff_key(contentPayload(['type' => 'run.end', 'operation' => 'classification', 'outcome' => 'completed', 'content' => ['answers' => ['sentiment' => 'positive']]]), ['attempt' => true]),
 ]);
 
-it('rejects invalid content on construction encode and decode', function (array $payload): void {
+it('rejects invalid content on construction and wire decode', function (array $payload): void {
     expect(fn () => RecordV1::fromArray($payload))->toThrow(InvalidEnvelope::class);
+
+    try {
+        $json = json_encode([
+            'envelope_version' => 1,
+            'envelope_id' => '0199a447-3c74-7000-8000-000000000001',
+            'sent_at' => '2026-09-30T12:34:56.123456Z',
+            'client' => ['package' => 'artisan-build/assay-client', 'version' => 'test'],
+            'sources' => [['driver' => 'fake', 'package' => 'vendor/fake', 'version' => 'test']],
+            'environment' => 'testing',
+            'dropped_transport_total' => 0,
+            'dropped_hook_total' => 0,
+            'records' => [$payload],
+        ], JSON_THROW_ON_ERROR);
+    } catch (JsonException $exception) {
+        expect($exception->getMessage())->toContain('Inf and NaN');
+
+        return;
+    }
+
+    expect(fn () => EnvelopeCodec::decode($json))->toThrow(InvalidEnvelope::class);
 })->with([
     'usage capture' => fn () => matrixPayload(['content' => ['instructions' => 'x']]),
     'unknown key' => fn () => contentPayload(['content' => ['secret' => 'x']]),

@@ -9,7 +9,9 @@ use App\Services\UsageIngestProcessor;
 use ArtisanBuild\AssayContracts\UuidV7;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Tests\Support\EnvelopeFactory;
 
 function fullCaptureUser(string $name, UserRole $role): User
@@ -88,13 +90,108 @@ it('stores full content, never stores usage content, and resolves late message b
     expect(DB::table('assay_record_content')->whereIn('run_id', DB::table('assay_runs')->where('invocation_id', 'usage-run')->select('id'))->count())->toBe(0);
 });
 
+it('round-trips every frozen content shape through PostgreSQL and the run tree', function (): void {
+    $message = ['role' => 'user', 'text' => 'MESSAGE-MATRIX-CANARY'];
+    $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR));
+    $records = [
+        EnvelopeFactory::record(['capture' => 'full', 'invocation_id' => 'matrix-agent', 'content' => [
+            'instructions' => 'INSTRUCTIONS-MATRIX-CANARY',
+            'tools' => [['name' => 'lookup', 'description' => 'Lookup', 'parameters' => ['type' => 'object']]],
+        ]]),
+        EnvelopeFactory::record(['type' => 'step.start', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'step' => 0, 'content' => [
+            'message_hashes' => [$hash],
+            'new_messages' => [$hash => $message],
+        ]]),
+        EnvelopeFactory::record(['type' => 'step.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'step' => 0, 'content' => [
+            'output_text' => 'OUTPUT-MATRIX-CANARY',
+            'structured_output' => ['structured' => 'STRUCTURED-MATRIX-CANARY'],
+            'tool_calls' => [['id' => 'call-1', 'name' => 'lookup', 'arguments' => ['id' => 1]]],
+        ]]),
+        EnvelopeFactory::record(['type' => 'tool.start', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'tool_invocation_id' => 'tool-1', 'content' => ['arguments' => ['customer' => 'ARGUMENT-MATRIX-CANARY']]]),
+        EnvelopeFactory::record(['type' => 'tool.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'tool_invocation_id' => 'tool-1', 'outcome' => 'completed', 'content' => ['result' => ['value' => 'RESULT-MATRIX-CANARY']]]),
+        EnvelopeFactory::record(['type' => 'tool.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'tool_invocation_id' => 'tool-2', 'outcome' => 'failed', 'content' => ['exception_message' => 'TOOL-EXCEPTION-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['type' => 'step.fail', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'step' => 1, 'content' => ['exception_message' => 'STEP-EXCEPTION-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['type' => 'run.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'outcome' => 'failed', 'content' => ['exception_message' => 'RUN-EXCEPTION-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['operation' => 'embeddings', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-embeddings', 'content' => ['inputs' => ['EMBEDDINGS-MATRIX-CANARY']]]),
+        EnvelopeFactory::record(['operation' => 'image', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-image', 'content' => ['prompt' => 'IMAGE-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['operation' => 'audio', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-audio', 'content' => ['text' => 'AUDIO-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['operation' => 'reranking', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-reranking', 'content' => ['query' => 'QUERY-MATRIX-CANARY', 'documents' => ['DOCUMENT-MATRIX-CANARY']]]),
+        EnvelopeFactory::record(['operation' => 'classification', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-classification', 'content' => ['prompt' => 'CLASSIFICATION-MATRIX-CANARY', 'labels' => ['LABEL-MATRIX-CANARY']]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'operation' => 'image', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-image', 'outcome' => 'completed', 'content' => ['count' => 1, 'dimensions' => [['width' => 640, 'height' => 480]]]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'operation' => 'transcription', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-transcription', 'outcome' => 'completed', 'content' => ['text' => 'TRANSCRIPTION-MATRIX-CANARY']]),
+        EnvelopeFactory::record(['type' => 'run.end', 'operation' => 'reranking', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-reranking', 'outcome' => 'completed', 'content' => ['results' => [['index' => 0, 'score' => 0.75]]]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'operation' => 'classification', 'attempt' => null, 'capture' => 'full', 'invocation_id' => 'matrix-classification', 'outcome' => 'completed', 'content' => ['answers' => ['answer' => 'ANSWER-MATRIX-CANARY']]]),
+    ];
+
+    ProcessUsageEnvelope::fromContract(
+        'matrix-app',
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    expect(DB::table('assay_record_content')->count())->toBe(17)
+        ->and(DB::table('assay_messages')->count())->toBe(1)
+        ->and(json_encode(DB::table('assay_record_content')->pluck('content'), JSON_THROW_ON_ERROR))
+        ->toContain(
+            'INSTRUCTIONS-MATRIX-CANARY',
+            'OUTPUT-MATRIX-CANARY',
+            'ARGUMENT-MATRIX-CANARY',
+            'RESULT-MATRIX-CANARY',
+            'EMBEDDINGS-MATRIX-CANARY',
+            'IMAGE-MATRIX-CANARY',
+            'AUDIO-MATRIX-CANARY',
+            'QUERY-MATRIX-CANARY',
+            'CLASSIFICATION-MATRIX-CANARY',
+            'TRANSCRIPTION-MATRIX-CANARY',
+            'ANSWER-MATRIX-CANARY',
+        )
+        ->and(json_encode(DB::table('assay_messages')->pluck('body'), JSON_THROW_ON_ERROR))->toContain('MESSAGE-MATRIX-CANARY');
+
+    $owner = fullCaptureUser('Matrix Content Owner', UserRole::Owner);
+    $runId = (string) DB::table('assay_runs')->where('invocation_id', 'matrix-agent')->value('id');
+    $this->actingAs($owner)->getJson(route('assay.runs.tree', $runId))
+        ->assertOk()
+        ->assertSee('INSTRUCTIONS-MATRIX-CANARY')
+        ->assertSee('MESSAGE-MATRIX-CANARY')
+        ->assertSee('RUN-EXCEPTION-MATRIX-CANARY');
+});
+
+it('rolls back app metadata usage and content when content storage fails', function (): void {
+    Event::listen(QueryExecuted::class, static function (QueryExecuted $event): void {
+        if (str_starts_with(strtolower($event->sql), 'insert into "assay_record_content"')) {
+            throw new RuntimeException('content storage unavailable');
+        }
+    });
+    $record = EnvelopeFactory::record([
+        'type' => 'step.end',
+        'capture' => 'full',
+        'step' => 0,
+        'usage' => ['input_tokens' => 3],
+        'content' => ['output_text' => 'ROLLBACK-CONTENT-CANARY'],
+    ]);
+
+    expect(fn () => ProcessUsageEnvelope::fromContract(
+        'rollback-app',
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope([$record]),
+    )->handle(resolve(UsageIngestProcessor::class)))->toThrow(RuntimeException::class, 'content storage unavailable');
+
+    expect(DB::table('assay_apps')->count())->toBe(0)
+        ->and(DB::table('assay_envelopes')->count())->toBe(0)
+        ->and(DB::table('assay_records')->count())->toBe(0)
+        ->and(DB::table('assay_runs')->count())->toBe(0)
+        ->and(DB::table('assay_usage_metrics')->count())->toBe(0)
+        ->and(DB::table('assay_record_content')->count())->toBe(0);
+});
+
 it('exposes content only to independently authorized people and never through usage surfaces', function (): void {
     $owner = fullCaptureUser('Full Owner', UserRole::Owner);
-    $admin = fullCaptureUser('Narrow Admin', UserRole::Admin);
+    $admin = fullCaptureUser('Full Admin', UserRole::Admin);
+    $deniedAdmin = fullCaptureUser('Narrow Admin', UserRole::Admin);
     $member = fullCaptureUser('Usage Member', UserRole::Member);
     $granted = fullCaptureUser('Granted Member', UserRole::Member);
     ContentAccessOverride::query()->create([
-        'actor_id' => (string) $admin->getKey(),
+        'actor_id' => (string) $deniedAdmin->getKey(),
         'access' => ContentAccess::Denied,
         'set_by_actor_id' => (string) $owner->getKey(),
         'set_at' => now(),
@@ -116,13 +213,16 @@ it('exposes content only to independently authorized people and never through us
     )->handle(resolve(UsageIngestProcessor::class));
     $runId = (string) DB::table('assay_runs')->where('invocation_id', 'auth-run')->value('id');
 
-    foreach ([$owner, $granted] as $actor) {
+    foreach ([$owner, $admin, $granted] as $actor) {
         $this->actingAs($actor)->getJson(route('assay.runs.tree', $runId))
             ->assertOk()
             ->assertSee('AUTH-CONTENT-CANARY');
+        $this->actingAs($actor)->get(route('assay.dashboard'))->assertOk()->assertDontSee('AUTH-CONTENT-CANARY');
+        $this->actingAs($actor)->getJson(route('assay.dashboard.top-runs'))->assertOk()->assertDontSee('AUTH-CONTENT-CANARY');
+        $this->actingAs($actor)->get(route('assay.dashboard.top-runs.csv'))->assertOk()->assertDontSee('AUTH-CONTENT-CANARY');
     }
 
-    foreach ([$admin, $member] as $actor) {
+    foreach ([$deniedAdmin, $member] as $actor) {
         $this->actingAs($actor)->getJson(route('assay.runs.tree', $runId))->assertForbidden();
         $this->actingAs($actor)->get(route('assay.dashboard'))->assertOk()->assertDontSee('AUTH-CONTENT-CANARY');
         $this->actingAs($actor)->getJson(route('assay.dashboard.top-runs'))->assertOk()->assertDontSee('AUTH-CONTENT-CANARY');
