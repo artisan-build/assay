@@ -60,11 +60,13 @@ final readonly class DatasetManager
 
             $occurredAt = CarbonImmutable::parse((string) ($run->ended_at ?? $run->started_at ?? $run->earliest_received_at));
 
-            if (! $this->barrier->allowsRun((string) $run->app_id, $runId, $occurredAt)) {
+            $admission = $this->barrier->runAdmission((string) $run->app_id, $runId, $occurredAt);
+
+            if (! $admission['allowed']) {
                 throw new AuthorizationException('The source run is behind an erasure barrier.');
             }
 
-            $subject = is_string($run->subject) && $run->subject !== '' ? $run->subject : null;
+            $subject = $admission['subject'];
             $identity = $subject === null || str_starts_with($subject, 'deleted:')
                 ? null
                 : $this->hasher->active($subject);

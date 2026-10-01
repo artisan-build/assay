@@ -17,8 +17,13 @@
         @csrf
         <label for="name">Name</label>
         <input id="name" name="name" required>
-        <label for="retention_days">Retention days (leave blank for no expiry)</label>
-        <input id="retention_days" name="retention_days" type="number" min="1">
+        <fieldset>
+            <legend>Retention</legend>
+            <label><input name="retention_mode" type="radio" value="default" checked> Operator default</label>
+            <label><input name="retention_mode" type="radio" value="custom"> Custom days</label>
+            <input id="retention_days" name="retention_days" type="number" min="1" max="36500" aria-label="Custom retention days">
+            <label><input name="retention_mode" type="radio" value="no_expiry"> No expiry</label>
+        </fieldset>
         <button type="submit">Create dataset</button>
     </form>
     <section data-testid="datasets-list">

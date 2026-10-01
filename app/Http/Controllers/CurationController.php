@@ -53,13 +53,24 @@ final class CurationController extends Controller
     {
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'retention_days' => ['sometimes', 'nullable', 'integer', 'between:1,36500'],
+            'retention_mode' => ['sometimes', Rule::in(['default', 'custom', 'no_expiry'])],
+            'retention_days' => [
+                'sometimes',
+                'nullable',
+                Rule::requiredIf($request->input('retention_mode') === 'custom'),
+                Rule::prohibitedIf(in_array($request->input('retention_mode'), ['default', 'no_expiry'], true)),
+                'integer',
+                'between:1,36500',
+            ],
         ]);
-        $retentionDays = false;
-
-        if (array_key_exists('retention_days', $validated)) {
-            $retentionDays = $validated['retention_days'] === null ? null : (int) $validated['retention_days'];
-        }
+        $retentionDays = match ($validated['retention_mode'] ?? null) {
+            'default' => false,
+            'no_expiry' => null,
+            'custom' => (int) $validated['retention_days'],
+            default => array_key_exists('retention_days', $validated)
+                ? ($validated['retention_days'] === null ? null : (int) $validated['retention_days'])
+                : false,
+        };
 
         $dataset = $this->datasets->create(
             $validated['name'],

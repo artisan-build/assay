@@ -10,6 +10,7 @@ use App\Services\DatasetManager;
 use App\Services\RetentionPruner;
 use App\Services\RunCuration;
 use App\Services\SubjectErasure;
+use App\Services\SubjectErasureHasher;
 use App\Services\UsageIngestProcessor;
 use ArtisanBuild\BuiltForCloud\Console\ActingPrincipal;
 use ArtisanBuild\BuiltForCloud\Console\ConsoleRole;
@@ -46,25 +47,35 @@ function createPr7User(string $name, UserRole $role): User
 /** @return array{run_id: string, app_id: string} */
 function ingestPr7Run(
     string $invocation,
-    string $subject,
+    ?string $subject,
     string $suffix = 'ONE',
     bool $omissionsPresent = false,
+    ?string $parentInvocation = null,
 ): array {
     $message = ['role' => 'user', 'text' => "INPUT-{$suffix}"];
     $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR));
+    $start = [
+        'invocation_id' => $invocation,
+        'capture' => 'full',
+        'sampled' => true,
+        'agent' => 'App\\Ai\\DatasetAgent',
+        'model' => ['provider' => 'provider-'.$suffix, 'requested' => 'requested-'.$suffix],
+        'content' => [
+            'instructions' => "INSTRUCTIONS-{$suffix}",
+            'tools' => [['name' => 'lookup', 'description' => "TOOL-{$suffix}", 'parameters' => ['type' => 'object']]],
+        ],
+    ];
+
+    if ($subject !== null) {
+        $start['subject'] = $subject;
+    }
+
+    if ($parentInvocation !== null) {
+        $start['parent_invocation_id'] = $parentInvocation;
+    }
+
     $records = [
-        EnvelopeFactory::record([
-            'invocation_id' => $invocation,
-            'subject' => $subject,
-            'capture' => 'full',
-            'sampled' => true,
-            'agent' => 'App\\Ai\\DatasetAgent',
-            'model' => ['provider' => 'provider-'.$suffix, 'requested' => 'requested-'.$suffix],
-            'content' => [
-                'instructions' => "INSTRUCTIONS-{$suffix}",
-                'tools' => [['name' => 'lookup', 'description' => "TOOL-{$suffix}", 'parameters' => ['type' => 'object']]],
-            ],
-        ]),
+        EnvelopeFactory::record($start),
         EnvelopeFactory::record([
             'type' => 'step.start', 'invocation_id' => $invocation, 'step' => 0, 'capture' => 'full',
             'content' => ['message_hashes' => [$hash], 'new_messages' => [$hash => $message]],
@@ -169,18 +180,56 @@ it('rejects incomplete content and derives replay fidelity only from omission pr
         ->and(DB::table('assay_dataset_items')->count())->toBe(2);
 });
 
-it('creates a dataset with custom retention from a browser form', function (): void {
+it('resolves browser dataset retention choices and preserves explicit JSON no-expiry', function (): void {
     $owner = createPr7User('Dataset Form Owner', UserRole::Owner);
 
-    $response = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+    $defaultResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Browser default retention',
+        'retention_mode' => 'default',
+        'retention_days' => '',
+    ])->assertRedirect();
+    config()->set('assay.retention.dataset_days', 90);
+    $configuredResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Browser configured default',
+        'retention_mode' => 'default',
+        'retention_days' => '',
+    ])->assertRedirect();
+    $customResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
         'name' => 'Browser custom retention',
+        'retention_mode' => 'custom',
         'retention_days' => '30',
-    ]);
-    $response->assertRedirect();
-    $dataset = DB::table('assay_datasets')->where('name', 'Browser custom retention');
+    ])->assertRedirect();
+    $noneResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Browser no expiry',
+        'retention_mode' => 'no_expiry',
+        'retention_days' => '',
+    ])->assertRedirect();
+    $jsonResponse = $this->actingAs($owner)->postJson(route('assay.datasets.create'), [
+        'name' => 'JSON no expiry',
+        'retention_days' => null,
+    ])->assertCreated();
 
-    $response->assertRedirect(route('assay.datasets.show', (string) $dataset->value('id')));
-    expect($dataset->value('retention_days'))->toBe(30);
+    $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Contradictory retention',
+        'retention_mode' => 'no_expiry',
+        'retention_days' => '30',
+    ])->assertSessionHasErrors('retention_days');
+    $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Missing custom retention',
+        'retention_mode' => 'custom',
+        'retention_days' => '',
+    ])->assertSessionHasErrors('retention_days');
+
+    expect(DB::table('assay_datasets')->where('name', 'Browser default retention')->value('retention_days'))->toBe(365)
+        ->and(DB::table('assay_datasets')->where('name', 'Browser configured default')->value('retention_days'))->toBe(90)
+        ->and(DB::table('assay_datasets')->where('name', 'Browser custom retention')->value('retention_days'))->toBe(30)
+        ->and(DB::table('assay_datasets')->where('name', 'Browser no expiry')->value('retention_days'))->toBeNull()
+        ->and($jsonResponse->json('retention_days'))->toBeNull()
+        ->and(DB::table('assay_datasets')->count())->toBe(5);
+
+    foreach ([$defaultResponse, $configuredResponse, $customResponse, $noneResponse] as $response) {
+        $response->assertRedirect();
+    }
 });
 
 it('exports deterministic live JSONL without storing an artifact and binds fresh downloads to the requesting principal', function (): void {
@@ -263,6 +312,63 @@ it('removes flags and dataset items through erasure while preserving usage and r
         ->and(DB::table('assay_dataset_items')->count())->toBe(0)
         ->and($download->getContent())->toBe('')
         ->and(DB::table('assay_usage_metrics')->sum('value'))->toEqual($usage);
+});
+
+it('removes inherited-subject dataset snapshots and renders later exports empty', function (): void {
+    $owner = createPr7User('Inherited Erasure Owner', UserRole::Owner);
+    $subject = 'inherited-dataset-subject';
+    $root = ingestPr7Run('inherited-dataset-root', $subject, 'ROOT');
+    $child = ingestPr7Run('inherited-dataset-child', null, 'CHILD', parentInvocation: 'inherited-dataset-root');
+    $dataset = resolve(DatasetManager::class)->create('Inherited erasure set', null);
+    $item = resolve(DatasetManager::class)->add($dataset['id'], $child['run_id']);
+    $identity = resolve(SubjectErasureHasher::class)->active($subject);
+    $stored = DB::table('assay_dataset_items')->where('id', $item['id'])->sole();
+    $request = $this->actingAs($owner)->postJson(route('assay.datasets.exports.request', $dataset['id']))->json();
+
+    expect($root['app_id'])->toBe($child['app_id'])
+        ->and(DB::table('assay_runs')->where('id', $child['run_id'])->value('subject'))->toBeNull()
+        ->and($stored->subject_key_version)->toBe($identity['version'])
+        ->and($stored->subject_tombstone)->toBe($identity['tombstone']);
+
+    $result = resolve(SubjectErasure::class)->erase(
+        $root['app_id'],
+        $subject,
+        CarbonImmutable::parse('2027-01-01T00:00:00+00:00'),
+    );
+    $download = $this->actingAs($owner)->get($request['download_url'])->assertOk();
+
+    expect($result['dataset_items_deleted'])->toBe(1)
+        ->and(DB::table('assay_dataset_items')->count())->toBe(0)
+        ->and($download->getContent())->toBe('');
+});
+
+it('enforces the run flag foreign key and cascades flags with runs and apps', function (): void {
+    $first = ingestPr7Run('flag-fk-run', 'flag-fk-subject');
+    $second = ingestPr7Run('flag-fk-app', 'flag-fk-app-subject', 'TWO');
+    resolve(RunCuration::class)->flag($first['run_id'], ['run-delete'], null, 'RUN-DELETE-FLAG');
+    resolve(RunCuration::class)->flag($second['run_id'], ['app-delete'], null, 'APP-DELETE-FLAG');
+    $foreignKey = DB::selectOne(<<<'SQL'
+        SELECT confdeltype, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+        WHERE conrelid = 'assay_run_flags'::regclass AND contype = 'f'
+        SQL);
+
+    expect($foreignKey)->not->toBeNull();
+    expect((string) $foreignKey->confdeltype)->toBe('c')
+        ->and((string) $foreignKey->definition)->toContain('FOREIGN KEY (run_id)', 'REFERENCES assay_runs(id)', 'ON DELETE CASCADE');
+
+    DB::table('assay_runs')->where('id', $first['run_id'])->delete();
+
+    expect(DB::table('assay_run_flags')->where('run_id', $first['run_id'])->exists())->toBeFalse()
+        ->and(DB::table('assay_run_flags')->where('run_id', $second['run_id'])->exists())->toBeTrue()
+        ->and(DB::table('assay_run_flags as flag')->leftJoin('assay_runs as run', 'run.id', '=', 'flag.run_id')->whereNull('run.id')->count())->toBe(0);
+
+    DB::table('assay_apps')->where('id', $second['app_id'])->delete();
+
+    expect(DB::table('assay_runs')->count())->toBe(0)
+        ->and(DB::table('assay_run_flags')->count())->toBe(0)
+        ->and(DB::table('assay_run_flags as flag')->join('assay_runs as run', 'run.id', '=', 'flag.run_id')->count())->toBe(0)
+        ->and(DB::table('assay_run_flags as flag')->leftJoin('assay_runs as run', 'run.id', '=', 'flag.run_id')->whereNull('run.id')->count())->toBe(0);
 });
 
 it('gates every PR7 route through central content policy and keeps usage projections content-free', function (): void {

@@ -29,15 +29,21 @@ final readonly class SubjectErasureBarrier
 
     public function allowsRun(string $appId, string $runId, CarbonImmutable $occurredAt): bool
     {
+        return $this->runAdmission($appId, $runId, $occurredAt)['allowed'];
+    }
+
+    /** @return array{allowed: bool, subject: string|null} */
+    public function runAdmission(string $appId, string $runId, CarbonImmutable $occurredAt): array
+    {
         $subject = $this->effectiveSubject($appId, $runId);
 
         if (! is_string($subject) || $subject === '') {
-            return true;
+            return ['allowed' => true, 'subject' => null];
         }
 
         $this->lock($appId, $subject);
 
-        return $this->allows($appId, $subject, $occurredAt);
+        return ['allowed' => $this->allows($appId, $subject, $occurredAt), 'subject' => $subject];
     }
 
     public function lock(string $appId, string $subject): void

@@ -11,7 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('assay_run_flags', function (Blueprint $table): void {
-            $table->uuid('run_id')->primary()->constrained('assay_runs')->cascadeOnDelete();
+            $table->foreignUuid('run_id')->primary()->constrained('assay_runs')->cascadeOnDelete();
             $table->jsonb('labels');
             $table->string('rating', 8)->nullable();
             $table->text('note')->nullable();

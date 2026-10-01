@@ -20,8 +20,42 @@ use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 
 /** @return array{app_id: string, run_id: string, subject: string} */
-function seedDatasetRaceRun(string $invocation, string $subject): array
+function seedDatasetRaceRun(string $invocation, string $subject, bool $inherited = false): array
 {
+    $records = [[
+        'record_id' => (string) UuidV7::generate(),
+        'source' => 'laravel-ai',
+        'type' => 'run.start',
+        'operation' => 'agent',
+        'invocation_id' => $inherited ? $invocation.'-root' : $invocation,
+        'attempt' => 1,
+        'at' => '2026-10-01T12:00:00.000000+00:00',
+        'capture' => 'full',
+        'sampled' => true,
+        'subject' => $subject,
+        'agent' => 'App\\Ai\\RaceAgent',
+        'content' => json_encode(['instructions' => 'RACE-ROOT-CONTENT'], JSON_THROW_ON_ERROR),
+    ]];
+
+    if ($inherited) {
+        $records[] = [
+            'record_id' => (string) UuidV7::generate(),
+            'source' => 'laravel-ai',
+            'type' => 'run.start',
+            'operation' => 'agent',
+            'invocation_id' => $invocation,
+            'parent_invocation_id' => $invocation.'-root',
+            'attempt' => 1,
+            'at' => '2026-10-01T12:00:01.000000+00:00',
+            'capture' => 'full',
+            'sampled' => true,
+            'agent' => 'App\\Ai\\RaceAgent',
+            'content' => json_encode(['instructions' => 'RACE-CONTENT-CANARY'], JSON_THROW_ON_ERROR),
+        ];
+    } else {
+        $records[0]['content'] = json_encode(['instructions' => 'RACE-CONTENT-CANARY'], JSON_THROW_ON_ERROR);
+    }
+
     resolve(UsageIngestProcessor::class)->process('dataset-race-app', '2026-10-01T12:01:00.000000+00:00', [
         'envelope_id' => (string) UuidV7::generate(),
         'sent_at' => '2026-10-01T12:00:00.000000+00:00',
@@ -31,20 +65,7 @@ function seedDatasetRaceRun(string $invocation, string $subject): array
         'deploy' => 'race-deploy',
         'dropped_transport_total' => 0,
         'dropped_hook_total' => 0,
-        'records' => [[
-            'record_id' => (string) UuidV7::generate(),
-            'source' => 'laravel-ai',
-            'type' => 'run.start',
-            'operation' => 'agent',
-            'invocation_id' => $invocation,
-            'attempt' => 1,
-            'at' => '2026-10-01T12:00:00.000000+00:00',
-            'capture' => 'full',
-            'sampled' => true,
-            'subject' => $subject,
-            'agent' => 'App\\Ai\\RaceAgent',
-            'content' => json_encode(['instructions' => 'RACE-CONTENT-CANARY'], JSON_THROW_ON_ERROR),
-        ]],
+        'records' => $records,
     ]);
 
     return [
@@ -93,7 +114,7 @@ it('serializes erasure first so a racing dataset add cannot snapshot erased cont
 });
 
 it('serializes dataset add first and the waiting erasure removes its snapshot', function (): void {
-    $source = seedDatasetRaceRun('add-first', 'add-first-subject');
+    $source = seedDatasetRaceRun('add-first', 'add-first-subject', inherited: true);
     $dataset = resolve(DatasetManager::class)->create('Add first');
 
     DB::beginTransaction();
