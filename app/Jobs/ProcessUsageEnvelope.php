@@ -7,10 +7,11 @@ namespace App\Jobs;
 use App\Services\UsageIngestProcessor;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
 use ArtisanBuild\AssayContracts\RecordV1;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-final class ProcessUsageEnvelope implements ShouldQueue
+final class ProcessUsageEnvelope implements ShouldBeEncrypted, ShouldQueue
 {
     use Queueable;
 
