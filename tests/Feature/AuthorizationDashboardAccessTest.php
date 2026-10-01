@@ -490,19 +490,4 @@ it('covers the PR5 people surface matrix while usage/content credentials and per
         }
     }
 
-    $this->assertSame(
-        'PR7b',
-        'PR7b',
-        'Usage-scoped credentials, content-scoped credentials, and person-bound credential caps are deferred to PR7b and are not covered by PR5.',
-    );
-});
-
-it('states the PR7b deferral in the principal surface matrix: usage/content credentials and person-bound caps are not PR5 coverage', function (): void {
-    // PR5 covers people, delegated assertions where observable, and denial of any valid credential.
-    // Usage-scoped credentials, content-scoped credentials, and person-bound credential caps are deferred to PR7b.
-    $this->assertSame(
-        'PR7b',
-        'PR7b',
-        'Usage-scoped credentials, content-scoped credentials, and person-bound credential caps are deferred to PR7b and are not covered by PR5.',
-    );
 });
