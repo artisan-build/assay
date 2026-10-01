@@ -165,6 +165,16 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
             if ($record->capture === CaptureMode::Full && ! $record->sampled) {
                 if ($root !== null && $this->usesFailureBuffer($record, $root)) {
                     $this->buffer($root, $record);
+
+                    if ($failure && $record->type === RecordType::RunEnd) {
+                        $record = $this->copy(
+                            $record,
+                            failureCapture: $this->rootStates[$root]['truncated']
+                                ? FailureCapture::Truncated
+                                : FailureCapture::Complete,
+                        );
+                    }
+
                     $this->enqueue($this->copy($record, capture: CaptureMode::Usage, content: null));
 
                     if ($this->rootStates[$root]['failed']) {

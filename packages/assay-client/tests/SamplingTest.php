@@ -375,6 +375,24 @@ it('counts encoded multibyte content bytes and evicts the oldest content first',
         ->and($failedEnd?->failureCapture)->toBe(FailureCapture::Truncated);
 });
 
+it('reports truncated when failed terminal content first exceeds the failure buffer', function (): void {
+    $dispatcher = new CollectingDispatcher;
+    $recorder = samplingRecorder($dispatcher, sampleRate: 0.0, failureBufferBytes: 1);
+    $recorder->record(fullRunStart('terminal-overflow', 'App\\Ai\\Agent'));
+    $recorder->record(fullRunEnd(
+        'terminal-overflow',
+        Outcome::Failed,
+        content: new Content(['exception_message' => 'first oversized content']),
+    ));
+    $recorder->flush();
+
+    $records = collect(dispatchedSamplingRecords($dispatcher));
+    $failedEnd = $records->first(fn (RecordV1 $record): bool => $record->type === RecordType::RunEnd);
+    expect($records->filter(fn (RecordV1 $record): bool => $record->type === RecordType::ContentAttach))->toBeEmpty()
+        ->and($records->filter(fn (RecordV1 $record): bool => $record->content !== null))->toBeEmpty()
+        ->and($failedEnd?->failureCapture)->toBe(FailureCapture::Truncated);
+});
+
 it('never applies failure capture to standalone non-agent operations or when disabled', function (): void {
     $dispatcher = new CollectingDispatcher;
     $recorder = samplingRecorder($dispatcher, sampleRate: 0.0);
