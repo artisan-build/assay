@@ -25,10 +25,12 @@ use ArtisanBuild\AssayClient\Transport\HttpTransport;
 use ArtisanBuild\AssayClient\Usage;
 use ArtisanBuild\AssayContracts\CaptureMode;
 use ArtisanBuild\AssayContracts\Client;
+use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\FinishReason as ContractFinishReason;
 use ArtisanBuild\AssayContracts\Operation;
 use ArtisanBuild\AssayContracts\Outcome;
 use ArtisanBuild\AssayContracts\RecordType;
+use ArtisanBuild\AssayContracts\RecordV1;
 use ArtisanBuild\AssayContracts\ReplayInputOmission;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Events\Dispatcher;
@@ -664,6 +666,87 @@ it('preserves and prunes approval linkage in terminal-first production order', f
         ->and($invocations->approvalSnapshot('approval-requested'))->toBeNull()
         ->and($invocations->approvalSnapshot('approval-resolved'))->toBeNull()
         ->and($decisions)->not->toHaveKeys(['approval-requested', 'approval-resolved']);
+});
+
+it('releases buffered tree context when an approval lifecycle carries an empty collection', function (): void {
+    config()->set('assay.capture', 'full');
+    $events = new Dispatcher;
+    $dispatcher = new CollectingDispatcher;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        new InMemoryDropCounter,
+        $dispatcher,
+        app(),
+        sampleRate: 0.0,
+    );
+    (new LaravelAiDriver($events))->register($buffered);
+    $provider = laravelAiProvider($events, 'empty-approval');
+    $agent = new SummarizeAgent;
+    $prompt = new AgentPrompt(
+        $agent,
+        'safe',
+        [],
+        $provider,
+        'model-a',
+        invocationId: 'empty-approval',
+    );
+    $response = (new AgentResponse('empty-approval', 'safe', new TextUsage, new Meta('empty-approval', 'model-a')))
+        ->withPendingApprovals(collect([new PendingApproval('unused', 'safe_tool', [], null)]));
+    $events->dispatch(new PromptingAgent('empty-approval', $prompt));
+    $events->dispatch(new AgentPrompted('empty-approval', $prompt, $response));
+    $events->dispatch(new ToolApprovalRequested('empty-approval', $agent, collect()));
+
+    expect((new ReflectionProperty($buffered, 'rootStates'))->getValue($buffered))->toBe([])
+        ->and((new ReflectionProperty($buffered, 'invocationRoots'))->getValue($buffered))->toBe([])
+        ->and((new ReflectionProperty($buffered, 'retainedTreeContexts'))->getValue($buffered))->toBe([]);
+});
+
+it('inherits sampled full capture on a terminal-first approval and then prunes tree state', function (): void {
+    config()->set('assay.capture', 'full');
+    $events = new Dispatcher;
+    $dispatcher = new CollectingDispatcher;
+    $buffered = new BufferedRecorder(
+        'laravel-ai',
+        new SourceInfo('laravel/ai', 'test'),
+        new Client('artisan-build/assay-client', 'test'),
+        'testing',
+        null,
+        100,
+        86400,
+        new InMemoryDropCounter,
+        $dispatcher,
+        app(),
+        sampleRate: 1.0,
+    );
+    (new LaravelAiDriver($events))->register($buffered);
+    $provider = laravelAiProvider($events, 'sampled-approval');
+    $agent = new SummarizeAgent;
+    $prompt = new AgentPrompt($agent, 'safe', [], $provider, 'model-a', invocationId: 'sampled-approval');
+    $response = (new AgentResponse('sampled-approval', 'safe', new TextUsage, new Meta('sampled-approval', 'model-a')))
+        ->withPendingApprovals(collect([new PendingApproval('approval-id', 'safe_tool', [], null)]));
+
+    $events->dispatch(new PromptingAgent('sampled-approval', $prompt));
+    $events->dispatch(new AgentPrompted('sampled-approval', $prompt, $response));
+    $events->dispatch(new ToolApprovalRequested('sampled-approval', $agent, $response->pendingApprovals));
+    $buffered->flush();
+
+    $records = collect($dispatcher->dispatched)
+        ->flatMap(static fn (array $dispatch): array => EnvelopeCodec::decode($dispatch['json'])->records);
+    $approval = $records->first(static fn (RecordV1 $record): bool => $record->type === RecordType::ToolApproval);
+    assert($approval instanceof RecordV1);
+
+    expect($approval->capture)->toBe(CaptureMode::Full)
+        ->and($approval->sampled)->toBeTrue()
+        ->and($approval->subject)->toBe('unknown')
+        ->and((new ReflectionProperty($buffered, 'rootStates'))->getValue($buffered))->toBe([])
+        ->and((new ReflectionProperty($buffered, 'invocationRoots'))->getValue($buffered))->toBe([])
+        ->and((new ReflectionProperty($buffered, 'retainedTreeContexts'))->getValue($buffered))->toBe([]);
 });
 
 it('clears invocation and decision state after projection and recording failures', function (): void {

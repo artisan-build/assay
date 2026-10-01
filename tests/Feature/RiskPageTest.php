@@ -11,7 +11,7 @@ it('renders the authorized risk disclosures and shipped hook recipes', function 
 
     $response = $this->actingAs($user)->get(route('assay.risk'))->assertOk();
 
-    foreach (['risk-page', 'risk-storage', 'risk-access', 'risk-retention', 'risk-queue-egress', 'risk-hook-recipes'] as $marker) {
+    foreach (['risk-page', 'risk-storage', 'risk-sampling-subject', 'risk-access', 'risk-retention', 'risk-queue-egress', 'risk-hook-recipes'] as $marker) {
         $response->assertSee('data-testid="'.$marker.'"', false);
     }
 
@@ -41,6 +41,11 @@ it('renders the authorized risk disclosures and shipped hook recipes', function 
         ->assertSee('encrypted queued jobs')
         ->assertSee('failed_jobs')
         ->assertSee('until operators prune them')
+        ->assertSee('512 KiB')
+        ->assertSee('assay.subject')
+        ->assertSee('Usage is never sampled away')
+        ->assertSee('Standalone non-agent operations are excluded')
+        ->assertSee('displays as unknown')
         ->assertSee("payload->product !== 'assay'", false);
 });
 

@@ -90,6 +90,70 @@ it('stores full content, never stores usage content, and resolves late message b
     expect(DB::table('assay_record_content')->whereIn('run_id', DB::table('assay_runs')->where('invocation_id', 'usage-run')->select('id'))->count())->toBe(0);
 });
 
+it('ingests an always-on-failure flush once without duplicating usage steps failures or latency', function (): void {
+    $runStartId = (string) UuidV7::generate();
+    $stepEndId = (string) UuidV7::generate();
+    $stepFailId = (string) UuidV7::generate();
+    $runEndId = (string) UuidV7::generate();
+    $records = [
+        EnvelopeFactory::record([
+            'record_id' => $runStartId,
+            'type' => 'run.start',
+            'capture' => 'usage',
+            'sampled' => false,
+            'invocation_id' => 'failure-flush',
+        ]),
+        EnvelopeFactory::record([
+            'record_id' => $stepEndId,
+            'type' => 'step.end',
+            'capture' => 'usage',
+            'sampled' => false,
+            'invocation_id' => 'failure-flush',
+            'step' => 0,
+            'duration_ms' => 12.5,
+            'usage' => ['input_tokens' => 7],
+        ]),
+        EnvelopeFactory::record([
+            'record_id' => $stepFailId,
+            'type' => 'step.fail',
+            'capture' => 'usage',
+            'sampled' => false,
+            'invocation_id' => 'failure-flush',
+            'step' => 1,
+            'duration_ms' => 8.5,
+            'failure_class' => RuntimeException::class,
+        ]),
+        EnvelopeFactory::record([
+            'record_id' => $runEndId,
+            'type' => 'run.end',
+            'capture' => 'usage',
+            'sampled' => false,
+            'invocation_id' => 'failure-flush',
+            'outcome' => 'failed',
+            'failure_class' => RuntimeException::class,
+            'failure_capture' => 'complete',
+        ]),
+        EnvelopeFactory::attach($runStartId, 'failure-flush', ['instructions' => 'captured instructions']),
+        EnvelopeFactory::attach($stepEndId, 'failure-flush', ['output_text' => 'captured output']),
+        EnvelopeFactory::attach($stepFailId, 'failure-flush', ['exception_message' => 'captured step failure']),
+        EnvelopeFactory::attach($runEndId, 'failure-flush', ['exception_message' => 'captured agent failure']),
+    ];
+    $envelope = EnvelopeFactory::envelope($records);
+    $job = ProcessUsageEnvelope::fromContract('failure-app', '2026-10-01T12:00:00.000000+00:00', $envelope);
+    $job->handle(resolve(UsageIngestProcessor::class));
+    $job->handle(resolve(UsageIngestProcessor::class));
+
+    $runId = (string) DB::table('assay_runs')->where('invocation_id', 'failure-flush')->value('id');
+    expect(DB::table('assay_runs')->where('id', $runId)->count())->toBe(1)
+        ->and(DB::table('assay_records')->count())->toBe(4)
+        ->and(DB::table('assay_steps')->where('run_id', $runId)->count())->toBe(2)
+        ->and(DB::table('assay_steps')->where('run_id', $runId)->where('event', 'end')->where('duration_ms', 12.5)->count())->toBe(1)
+        ->and(DB::table('assay_steps')->where('run_id', $runId)->where('event', 'fail')->where('failure_class', RuntimeException::class)->count())->toBe(1)
+        ->and(DB::table('assay_usage_metrics')->where('run_id', $runId)->where('source', 'agent_step')->count())->toBe(1)
+        ->and(DB::table('assay_record_content')->where('run_id', $runId)->count())->toBe(4)
+        ->and(DB::table('assay_content_attach_receipts')->where('status', 'accepted')->count())->toBe(4);
+});
+
 it('round-trips every frozen content shape through PostgreSQL and the run tree', function (): void {
     $message = [
         'role' => 'assistant',

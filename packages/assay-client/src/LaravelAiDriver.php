@@ -6,6 +6,7 @@ namespace ArtisanBuild\AssayClient;
 
 use ArtisanBuild\AssayClient\Internal\DroppedRecordInput;
 use ArtisanBuild\AssayClient\Internal\InvocationState;
+use ArtisanBuild\AssayClient\Internal\TreeLifecycleRecorder;
 use ArtisanBuild\AssayClient\Records\AttemptInput;
 use ArtisanBuild\AssayClient\Records\OperationStartInput;
 use ArtisanBuild\AssayClient\Records\RunInput;
@@ -217,6 +218,10 @@ final class LaravelAiDriver implements CaptureDriver
         $recorded = false;
 
         try {
+            if ($retainApproval && $this->recorder instanceof TreeLifecycleRecorder) {
+                $this->recorder->retainTreeContext($event->invocationId);
+            }
+
             $lastStep = $event->response->steps->last();
             $this->record(new RunInput(
                 RecordType::RunEnd,
@@ -416,6 +421,8 @@ final class LaravelAiDriver implements CaptureDriver
                     agent: $event->agent::class,
                     tool: $approval->tool,
                     approval: Approval::Requested,
+                    capture: $this->capture(),
+                    sampled: $this->capture() === CaptureMode::Full,
                 ));
             }
             $recorded = true;
@@ -426,6 +433,10 @@ final class LaravelAiDriver implements CaptureDriver
 
             if (! $recorded || ! isset($this->approvalDecisions[$event->invocationId])) {
                 $this->invocations->finishApproval($event->invocationId);
+            }
+
+            if ($this->recorder instanceof TreeLifecycleRecorder) {
+                $this->recorder->releaseTreeContext($event->invocationId);
             }
         }
     }
@@ -449,11 +460,17 @@ final class LaravelAiDriver implements CaptureDriver
                     agent: $event->agent::class,
                     tool: $result->name,
                     approval: $approval,
+                    capture: $this->capture(),
+                    sampled: $this->capture() === CaptureMode::Full,
                 ));
             }
         } finally {
             unset($this->approvalDecisions[$event->invocationId]);
             $this->invocations->finishApproval($event->invocationId);
+
+            if ($this->recorder instanceof TreeLifecycleRecorder) {
+                $this->recorder->releaseTreeContext($event->invocationId);
+            }
         }
     }
 

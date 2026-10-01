@@ -160,7 +160,7 @@ final class UsageDashboard
             SELECT
                 um.metric,
                 a.app_ref AS app,
-                r.subject,
+                COALESCE(r.subject, 'unknown') AS subject,
                 COUNT(DISTINCT r.id)::text AS run_count,
                 SUM(um.value)::text AS usage
             FROM assay_usage_metrics um
@@ -169,9 +169,8 @@ final class UsageDashboard
             WHERE
                 um.metric = ?
                 AND um.source IN ('agent_step', 'non_agent')
-                AND r.subject IS NOT NULL
-            GROUP BY um.metric, a.app_ref, r.subject
-            ORDER BY SUM(um.value) DESC, a.app_ref, r.subject
+            GROUP BY um.metric, a.app_ref, COALESCE(r.subject, 'unknown')
+            ORDER BY SUM(um.value) DESC, a.app_ref, COALESCE(r.subject, 'unknown')
             LIMIT {$limit}
             SQL, [$metric->value]);
 
@@ -222,7 +221,10 @@ final class UsageDashboard
                 COALESCE(r.environment, 'not_reported') AS environment,
                 COALESCE(r.operation, 'not_reported') AS operation,
                 COALESCE(r.agent, 'not_reported') AS agent,
-                COALESCE(r.subject, 'not_reported') AS subject,
+                COALESCE(r.subject, 'unknown') AS subject,
+                r.capture,
+                r.sampled,
+                r.failure_capture,
                 r.status,
                 subtree_usage.usage::text AS usage
             FROM subtree_usage
@@ -241,6 +243,9 @@ final class UsageDashboard
             'operation',
             'agent',
             'subject',
+            'capture',
+            'sampled',
+            'failure_capture',
             'status',
             'usage',
         ];
@@ -257,7 +262,7 @@ final class UsageDashboard
         return new DashboardTable(
             $headers,
             $rows,
-            ['app', 'invocation_id', 'environment', 'operation', 'agent', 'subject', 'status'],
+            ['app', 'invocation_id', 'environment', 'operation', 'agent', 'subject', 'capture', 'sampled', 'failure_capture', 'status'],
         );
     }
 
@@ -723,7 +728,10 @@ final class UsageDashboard
                 COALESCE(provider, 'not_reported') AS provider,
                 COALESCE(requested_model, 'not_reported') AS requested_model,
                 COALESCE(responded_model, requested_model, 'not_reported') AS responded_model,
-                COALESCE(subject, 'not_reported') AS subject,
+                COALESCE(subject, 'unknown') AS subject,
+                capture,
+                sampled,
+                failure_capture,
                 status,
                 failure_class
             FROM run_tree
@@ -776,6 +784,9 @@ final class UsageDashboard
                 'requested_model',
                 'responded_model',
                 'subject',
+                'capture',
+                'sampled',
+                'failure_capture',
                 'status',
                 'failure_class',
             ],
