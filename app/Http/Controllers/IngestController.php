@@ -53,34 +53,44 @@ final class IngestController extends Controller
         $maxSources = max(1, (int) config('assay.ingest.max_sources', 16));
         $newerVersion = null;
         $overLimit = null;
+        $rejectedContentAttaches = [];
 
         try {
-            $envelope = EnvelopeCodec::decode($body, static function (array $decoded) use (
-                $maxRecords,
-                $maxSources,
-                &$newerVersion,
-                &$overLimit,
-            ): void {
-                $version = $decoded['envelope_version'] ?? null;
+            $envelope = EnvelopeCodec::decodeForIngest(
+                $body,
+                static function (int $index, string $recordId) use (&$rejectedContentAttaches): void {
+                    $rejectedContentAttaches[] = [
+                        'index' => $index,
+                        'record_id' => $recordId,
+                    ];
+                },
+                static function (array $decoded) use (
+                    $maxRecords,
+                    $maxSources,
+                    &$newerVersion,
+                    &$overLimit,
+                ): void {
+                    $version = $decoded['envelope_version'] ?? null;
 
-                if (is_int($version) && $version > EnvelopeV1::VERSION) {
-                    $newerVersion = $version;
+                    if (is_int($version) && $version > EnvelopeV1::VERSION) {
+                        $newerVersion = $version;
 
-                    throw new InvalidEnvelope('Envelope version is newer than the server.');
-                }
+                        throw new InvalidEnvelope('Envelope version is newer than the server.');
+                    }
 
-                if (is_array($decoded['records'] ?? null) && count($decoded['records']) > $maxRecords) {
-                    $overLimit = 'records';
+                    if (is_array($decoded['records'] ?? null) && count($decoded['records']) > $maxRecords) {
+                        $overLimit = 'records';
 
-                    throw new LengthException('Envelope has too many records.');
-                }
+                        throw new LengthException('Envelope has too many records.');
+                    }
 
-                if (is_array($decoded['sources'] ?? null) && count($decoded['sources']) > $maxSources) {
-                    $overLimit = 'sources';
+                    if (is_array($decoded['sources'] ?? null) && count($decoded['sources']) > $maxSources) {
+                        $overLimit = 'sources';
 
-                    throw new LengthException('Envelope has too many sources.');
-                }
-            });
+                        throw new LengthException('Envelope has too many sources.');
+                    }
+                },
+            );
         } catch (LengthException) {
             return $overLimit === 'records'
                 ? response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413)
@@ -115,6 +125,7 @@ final class IngestController extends Controller
             appRef: $credential->subject_ref,
             receivedAt: now()->format('Y-m-d\TH:i:s.uP'),
             envelope: $envelope,
+            rejectedContentAttaches: $rejectedContentAttaches,
         );
         $queue = config('assay.queue');
 

@@ -171,3 +171,67 @@ it('replaces content database failures with value-free exceptions in direct queu
     'null-origin PostgreSQL JSONB failure' => ['null', '22P05'],
     'content constraint violation' => ['constraint', '23514'],
 ]);
+
+it('contains rejected attach content across direct database queue failed job and log surfaces', function (): void {
+    $canary = 'REJECTED-ATTACH-CONTENT-CANARY';
+    DB::statement(<<<'SQL'
+        ALTER TABLE assay_pending_content_attaches
+        ADD CONSTRAINT assay_test_reject_pending_attach
+        CHECK (content::text NOT LIKE '%REJECTED-ATTACH-CONTENT-CANARY%')
+        SQL);
+    $logPath = storage_path('logs/rejected-content-attach.log');
+    @unlink($logPath);
+    config()->set('logging.default', 'single');
+    config()->set('logging.channels.single.path', $logPath);
+    Log::setDefaultDriver('single');
+    Log::forgetChannel('single');
+    $logs = [];
+    Log::listen(static function (MessageLogged $event) use (&$logs): void {
+        $logs[] = $event->message;
+        $logs[] = json_encode($event->context, JSON_THROW_ON_ERROR);
+    });
+    $job = static fn (string $app): ProcessUsageEnvelope => ProcessUsageEnvelope::fromContract(
+        $app,
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope([
+            EnvelopeFactory::attach(
+                (string) UuidV7::generate(),
+                'missing-target',
+                ['instructions' => $canary],
+            ),
+        ]),
+    );
+    $direct = null;
+
+    try {
+        $job('direct-rejected-attach')->handle(resolve(UsageIngestProcessor::class));
+    } catch (Throwable $exception) {
+        $direct = $exception;
+    }
+
+    expect($direct)->toBeNull()
+        ->and(DB::table('assay_pending_content_attaches')->count())->toBe(0)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'persistence_failed')->count())->toBe(1)
+        ->and(implode("\n", $logs))->toContain('Content attach rejected.', 'persistence_failed')
+        ->not->toContain($canary);
+
+    $queue = 'rejected-content-attach';
+    Queue::connection('database')->push($job('queued-rejected-attach'), queue: $queue);
+    $payload = (string) DB::table('jobs')->where('queue', $queue)->value('payload');
+    Artisan::call('queue:work', [
+        'connection' => 'database',
+        '--queue' => $queue,
+        '--once' => true,
+        '--tries' => 1,
+    ]);
+    $logOutput = is_file($logPath) ? (string) file_get_contents($logPath) : '';
+
+    expect($payload)->not->toContain($canary)
+        ->and(DB::table('failed_jobs')->where('queue', $queue)->count())->toBe(0)
+        ->and(DB::table('jobs')->where('queue', $queue)->count())->toBe(0)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'persistence_failed')->count())->toBe(2)
+        ->and($logOutput)->toContain('Content attach rejected.', 'persistence_failed')
+        ->not->toContain($canary);
+
+    @unlink($logPath);
+});
