@@ -63,6 +63,17 @@ final class IngestController extends Controller
             ], 422);
         }
 
+        $maxRecords = max(1, (int) config('assay.ingest.max_records', 500));
+        $maxSources = max(1, (int) config('assay.ingest.max_sources', 16));
+
+        if (is_array($decoded) && is_array($decoded['records'] ?? null) && count($decoded['records']) > $maxRecords) {
+            return response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413);
+        }
+
+        if (is_array($decoded) && is_array($decoded['sources'] ?? null) && count($decoded['sources']) > $maxSources) {
+            return response()->json(['error' => 'too_many_sources', 'limit' => $maxSources], 413);
+        }
+
         try {
             $envelope = is_array($decoded) ? EnvelopeV1::fromArray($decoded) : null;
         } catch (InvalidEnvelope) {
@@ -71,17 +82,6 @@ final class IngestController extends Controller
 
         if ($envelope === null) {
             return response()->json(['message' => 'Envelope is invalid.'], 422);
-        }
-
-        $maxRecords = max(1, (int) config('assay.ingest.max_records', 500));
-        $maxSources = max(1, (int) config('assay.ingest.max_sources', 16));
-
-        if (count($envelope->records) > $maxRecords) {
-            return response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413);
-        }
-
-        if (count($envelope->sources) > $maxSources) {
-            return response()->json(['error' => 'too_many_sources', 'limit' => $maxSources], 413);
         }
 
         if (! $usage->recordUsage($credential)) {

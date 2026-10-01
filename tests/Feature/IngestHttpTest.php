@@ -138,6 +138,34 @@ it('rejects decoded cardinality overflow before usage writes or dispatch', funct
         ->and(DB::table('assay_apps')->count())->toBe(0);
 })->with(['records', 'sources']);
 
+it('rejects raw cardinality overflow before validating an invalid extra member', function (string $kind): void {
+    config()->set('assay.ingest.max_records', 1);
+    config()->set('assay.ingest.max_sources', 1);
+    Bus::fake();
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'credential-app',
+    ]);
+    $envelope = EnvelopeFactory::envelope($kind === 'records' ? [EnvelopeFactory::record()] : []);
+    $body = json_decode(EnvelopeCodec::encode($envelope), true, flags: JSON_THROW_ON_ERROR);
+    $body[$kind][] = ['invalid' => 'INVALID-MEMBER-CANARY'];
+
+    $response = $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], json_encode($body, JSON_THROW_ON_ERROR));
+
+    $response->assertStatus(413)->assertContent($kind === 'records'
+        ? '{"error":"too_many_records","limit":1}'
+        : '{"error":"too_many_sources","limit":1}');
+    Bus::assertNothingDispatched();
+    expect($credential->credential->refresh()->last_used_at)->toBeNull()
+        ->and(DB::table('assay_apps')->count())->toBe(0)
+        ->and(DB::table('assay_envelopes')->count())->toBe(0)
+        ->and(DB::table('assay_records')->count())->toBe(0);
+})->with(['records', 'sources']);
+
 it('rejects the complete credential-negative matrix without dispatching or recording usage', function (string $case): void {
     Bus::fake();
     $attributes = [
