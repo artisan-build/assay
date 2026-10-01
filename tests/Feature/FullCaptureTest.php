@@ -55,7 +55,7 @@ it('stores full content, never stores usage content, and resolves late message b
         ->and(DB::table('assay_runs')->where('id', $runId)->value('content_incomplete'))->toBeTrue();
 
     $lateBody = EnvelopeFactory::record([
-        'record_id' => $recordId,
+        'record_id' => (string) UuidV7::generate(),
         'type' => 'step.start',
         'capture' => 'full',
         'invocation_id' => 'full-run',
@@ -76,9 +76,9 @@ it('stores full content, never stores usage content, and resolves late message b
         EnvelopeFactory::envelope([$lateBody]),
     )->handle($processor);
 
-    expect(DB::table('assay_records')->count())->toBe(2)
+    expect(DB::table('assay_records')->count())->toBe(3)
         ->and(DB::table('assay_messages')->count())->toBe(1)
-        ->and(DB::table('assay_message_references')->count())->toBe(1)
+        ->and(DB::table('assay_message_references')->count())->toBe(2)
         ->and(DB::table('assay_runs')->where('id', $runId)->value('content_incomplete'))->toBeFalse();
 
     ProcessUsageEnvelope::fromContract(
@@ -93,6 +93,7 @@ it('stores full content, never stores usage content, and resolves late message b
 it('round-trips every frozen content shape through PostgreSQL and the run tree', function (): void {
     $message = ['role' => 'user', 'text' => 'MESSAGE-MATRIX-CANARY'];
     $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR));
+    $structuredRecordId = (string) UuidV7::generate();
     $records = [
         EnvelopeFactory::record(['capture' => 'full', 'invocation_id' => 'matrix-agent', 'content' => [
             'instructions' => 'INSTRUCTIONS-MATRIX-CANARY',
@@ -102,9 +103,13 @@ it('round-trips every frozen content shape through PostgreSQL and the run tree',
             'message_hashes' => [$hash],
             'new_messages' => [$hash => $message],
         ]]),
-        EnvelopeFactory::record(['type' => 'step.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'step' => 0, 'content' => [
+        EnvelopeFactory::record(['record_id' => $structuredRecordId, 'type' => 'step.end', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'step' => 0, 'content' => [
             'output_text' => 'OUTPUT-MATRIX-CANARY',
-            'structured_output' => ['structured' => 'STRUCTURED-MATRIX-CANARY'],
+            'structured_output' => [
+                'structured' => 'STRUCTURED-MATRIX-CANARY',
+                'empty_object' => (object) [],
+                'empty_list' => [],
+            ],
             'tool_calls' => [['id' => 'call-1', 'name' => 'lookup', 'arguments' => ['id' => 1]]],
         ]]),
         EnvelopeFactory::record(['type' => 'tool.start', 'capture' => 'full', 'invocation_id' => 'matrix-agent', 'tool_invocation_id' => 'tool-1', 'content' => ['arguments' => ['customer' => 'ARGUMENT-MATRIX-CANARY']]]),
@@ -147,6 +152,14 @@ it('round-trips every frozen content shape through PostgreSQL and the run tree',
         )
         ->and(json_encode(DB::table('assay_messages')->pluck('body'), JSON_THROW_ON_ERROR))->toContain('MESSAGE-MATRIX-CANARY');
 
+    $stored = json_decode((string) DB::table('assay_record_content')
+        ->join('assay_records', 'assay_records.id', '=', 'assay_record_content.record_id')
+        ->where('assay_records.record_id', $structuredRecordId)
+        ->value('content'), false, flags: JSON_THROW_ON_ERROR);
+
+    expect($stored->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($stored->structured_output->empty_list)->toBe([]);
+
     $owner = fullCaptureUser('Matrix Content Owner', UserRole::Owner);
     $runId = (string) DB::table('assay_runs')->where('invocation_id', 'matrix-agent')->value('id');
     $this->actingAs($owner)->getJson(route('assay.runs.tree', $runId))
@@ -154,6 +167,79 @@ it('round-trips every frozen content shape through PostgreSQL and the run tree',
         ->assertSee('INSTRUCTIONS-MATRIX-CANARY')
         ->assertSee('MESSAGE-MATRIX-CANARY')
         ->assertSee('RUN-EXCEPTION-MATRIX-CANARY');
+});
+
+it('treats same-run duplicate record ids as immutable', function (): void {
+    $recordId = (string) UuidV7::generate();
+    $processor = resolve(UsageIngestProcessor::class);
+    $original = EnvelopeFactory::record([
+        'record_id' => $recordId,
+        'capture' => 'full',
+        'invocation_id' => 'immutable-run',
+        'content' => ['instructions' => 'ORIGINAL-CONTENT'],
+    ]);
+    $duplicate = EnvelopeFactory::record([
+        'record_id' => $recordId,
+        'capture' => 'full',
+        'invocation_id' => 'immutable-run',
+        'content' => ['instructions' => 'REPLACEMENT-CONTENT'],
+    ]);
+
+    ProcessUsageEnvelope::fromContract(
+        'immutable-app',
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope([$original]),
+    )->handle($processor);
+    ProcessUsageEnvelope::fromContract(
+        'immutable-app',
+        '2026-10-01T12:01:00.000000+00:00',
+        EnvelopeFactory::envelope([$duplicate]),
+    )->handle($processor);
+
+    $stored = (string) DB::table('assay_record_content')->sole()->content;
+
+    expect(DB::table('assay_records')->count())->toBe(1)
+        ->and(DB::table('assay_record_content')->count())->toBe(1)
+        ->and($stored)->toContain('ORIGINAL-CONTENT')
+        ->not->toContain('REPLACEMENT-CONTENT');
+});
+
+it('does not cross-attach a duplicate record to a different run', function (): void {
+    $recordId = (string) UuidV7::generate();
+    $processor = resolve(UsageIngestProcessor::class);
+    $original = EnvelopeFactory::record([
+        'record_id' => $recordId,
+        'type' => 'step.end',
+        'invocation_id' => 'run-a',
+        'step' => 0,
+    ]);
+    $runB = EnvelopeFactory::record(['invocation_id' => 'run-b']);
+    $duplicate = EnvelopeFactory::record([
+        'record_id' => $recordId,
+        'type' => 'step.end',
+        'capture' => 'full',
+        'invocation_id' => 'run-b',
+        'step' => 0,
+        'content' => ['output_text' => 'CROSS-RUN-CANARY'],
+    ]);
+
+    foreach ([[$original], [$runB], [$duplicate]] as $offset => $records) {
+        ProcessUsageEnvelope::fromContract(
+            'cross-run-app',
+            sprintf('2026-10-01T12:0%d:00.000000+00:00', $offset),
+            EnvelopeFactory::envelope($records),
+        )->handle($processor);
+    }
+
+    $stepRun = DB::table('assay_steps')
+        ->join('assay_runs', 'assay_runs.id', '=', 'assay_steps.run_id')
+        ->value('assay_runs.invocation_id');
+
+    expect(DB::table('assay_records')->count())->toBe(2)
+        ->and(DB::table('assay_steps')->count())->toBe(1)
+        ->and($stepRun)->toBe('run-a')
+        ->and(DB::table('assay_record_content')->count())->toBe(0)
+        ->and(json_encode(DB::table('assay_runs')->get(), JSON_THROW_ON_ERROR))->not->toContain('CROSS-RUN-CANARY');
 });
 
 it('rolls back app metadata usage and content when content storage fails', function (): void {

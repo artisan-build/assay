@@ -49,10 +49,18 @@ final readonly class Content implements JsonSerializable
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        /** @var array<string, mixed> $value */
-        $value = json_decode($this->json, true, 512, JSON_THROW_ON_ERROR);
+        $value = json_decode($this->json, false, 512, JSON_THROW_ON_ERROR);
 
-        return $value;
+        if (! $value instanceof stdClass) {
+            throw new LogicException('Validated content must decode to an object.');
+        }
+
+        return array_map(self::arrayValue(...), get_object_vars($value));
+    }
+
+    public function toJson(): string
+    {
+        return $this->json;
     }
 
     public function jsonSerialize(): stdClass
@@ -68,8 +76,13 @@ final readonly class Content implements JsonSerializable
 
     public function validateFor(RecordType $type, ?Operation $operation, ?Outcome $outcome): void
     {
-        /** @var array<string, mixed> $data */
-        $data = json_decode($this->json, true, 512, JSON_THROW_ON_ERROR);
+        $value = json_decode($this->json, false, 512, JSON_THROW_ON_ERROR);
+
+        if (! $value instanceof stdClass) {
+            throw new LogicException('Validated content must decode to an object.');
+        }
+
+        $data = get_object_vars($value);
 
         if ($data === []) {
             throw new InvalidEnvelope('Record content must not be empty.');
@@ -183,7 +196,7 @@ final readonly class Content implements JsonSerializable
 
     private static function messages(mixed $value, mixed $hashes): void
     {
-        if (! is_array($value) || ($value !== [] && array_is_list($value))) {
+        if (! $value instanceof stdClass) {
             throw new InvalidEnvelope('content.new_messages must be an object.');
         }
 
@@ -191,30 +204,31 @@ final readonly class Content implements JsonSerializable
             throw new InvalidEnvelope('content.new_messages requires message_hashes.');
         }
 
-        foreach ($value as $hash => $message) {
+        foreach (get_object_vars($value) as $hash => $message) {
             if (! is_string($hash) || preg_match('/^[a-f0-9]{64}$/D', $hash) !== 1 || ! in_array($hash, $hashes, true)) {
                 throw new InvalidEnvelope('Every new_messages key must be a referenced lowercase sha256 hash.');
             }
 
-            if (! is_array($message) || array_is_list($message)) {
+            if (! $message instanceof stdClass) {
                 throw new InvalidEnvelope("content.new_messages.{$hash} must be an object.");
             }
 
-            self::allowedKeys($message, ['role', 'text', 'tool_calls', 'tool_call_id'], "content.new_messages.{$hash}");
-            self::stringField($message, 'role', "content.new_messages.{$hash}");
+            $messageData = get_object_vars($message);
+            self::allowedKeys($messageData, ['role', 'text', 'tool_calls', 'tool_call_id'], "content.new_messages.{$hash}");
+            self::stringField($messageData, 'role', "content.new_messages.{$hash}");
 
-            if (! in_array($message['role'], ['system', 'user', 'assistant', 'tool'], true)) {
+            if (! in_array($messageData['role'], ['system', 'user', 'assistant', 'tool'], true)) {
                 throw new InvalidEnvelope("content.new_messages.{$hash}.role is unsupported.");
             }
 
             foreach (['text', 'tool_call_id'] as $field) {
-                if (array_key_exists($field, $message) && ! is_string($message[$field])) {
+                if (array_key_exists($field, $messageData) && ! is_string($messageData[$field])) {
                     throw new InvalidEnvelope("content.new_messages.{$hash}.{$field} must be a string.");
                 }
             }
 
-            if (array_key_exists('tool_calls', $message)) {
-                self::toolCalls($message['tool_calls'], "content.new_messages.{$hash}.tool_calls");
+            if (array_key_exists('tool_calls', $messageData)) {
+                self::toolCalls($messageData['tool_calls'], "content.new_messages.{$hash}.tool_calls");
             }
 
             $canonical = json_encode(
@@ -230,6 +244,13 @@ final readonly class Content implements JsonSerializable
 
     private static function canonicalize(mixed $value): mixed
     {
+        if ($value instanceof stdClass) {
+            $value = get_object_vars($value);
+            ksort($value, SORT_STRING);
+
+            return $value === [] ? new stdClass : array_map(self::canonicalize(...), $value);
+        }
+
         if (! is_array($value)) {
             return $value;
         }
@@ -288,10 +309,11 @@ final readonly class Content implements JsonSerializable
         }
 
         foreach ($value as $index => $item) {
-            if (! is_array($item) || array_is_list($item)) {
+            if (! $item instanceof stdClass) {
                 throw new InvalidEnvelope("{$path}.{$index} must be an object.");
             }
 
+            $item = get_object_vars($item);
             self::allowedKeys($item, $keys, "{$path}.{$index}");
 
             foreach ($keys as $key) {
@@ -314,9 +336,20 @@ final readonly class Content implements JsonSerializable
 
     private static function objectValue(mixed $value, string $path): void
     {
-        if (! is_array($value) || ($value !== [] && array_is_list($value))) {
+        if (! $value instanceof stdClass) {
             throw new InvalidEnvelope("{$path} must be an object.");
         }
+    }
+
+    private static function arrayValue(mixed $value): mixed
+    {
+        if ($value instanceof stdClass) {
+            $data = get_object_vars($value);
+
+            return $data === [] ? $value : array_map(self::arrayValue(...), $data);
+        }
+
+        return is_array($value) ? array_map(self::arrayValue(...), $value) : $value;
     }
 
     /**

@@ -96,21 +96,6 @@ final class UsageIngestProcessor
         ]);
 
         if ($inserted === 0) {
-            if (isset($record['invocation_id'], $record['content'])) {
-                $existingRecordId = DB::table('assay_records')
-                    ->where('app_id', $appId)
-                    ->where('record_id', $record['record_id'])
-                    ->value('id');
-                $existingRunId = DB::table('assay_runs')
-                    ->where('app_id', $appId)
-                    ->where('invocation_id', $record['invocation_id'])
-                    ->value('id');
-
-                if (is_string($existingRecordId) && is_string($existingRunId)) {
-                    $this->content($existingRecordId, $existingRunId, $record);
-                }
-            }
-
             return;
         }
 
@@ -380,11 +365,15 @@ final class UsageIngestProcessor
     /** @param array<string, mixed> $record */
     private function content(string $recordId, string $runId, array $record): void
     {
-        $content = $record['content'];
+        $contentObject = is_string($record['content'])
+            ? json_decode($record['content'], false, 512, JSON_THROW_ON_ERROR)
+            : null;
 
-        if (! is_array($content)) {
-            throw new RuntimeException('Validated record content must be an array.');
+        if (! $contentObject instanceof stdClass) {
+            throw new RuntimeException('Validated record content must be an encoded JSON object.');
         }
+
+        $content = get_object_vars($contentObject);
 
         if ($record['type'] === 'step.start') {
             foreach ($content['message_hashes'] ?? [] as $position => $hash) {
@@ -396,7 +385,13 @@ final class UsageIngestProcessor
                 ]);
             }
 
-            foreach ($content['new_messages'] ?? [] as $hash => $body) {
+            $newMessages = $content['new_messages'] ?? new stdClass;
+
+            if (! $newMessages instanceof stdClass) {
+                throw new RuntimeException('Validated new_messages must be an encoded JSON object.');
+            }
+
+            foreach (get_object_vars($newMessages) as $hash => $body) {
                 DB::table('assay_messages')->insertOrIgnore([
                     'id' => (string) Str::uuid(),
                     'run_id' => $runId,

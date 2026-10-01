@@ -28,6 +28,17 @@ it('renders the authorized risk disclosures and shipped hook recipes', function 
         ->assertSee('OutboundPayload')
         ->assertSee('PayloadDisposition::Droppable')
         ->assertSee('PassThroughPayloadFilter')
+        ->assertSee('Drop one agent')
+        ->assertSee('Mask known content fields')
+        ->assertSee('Hash known identifiers in content')
+        ->assertSee('Keep usage and drop content')
+        ->assertSee('SensitiveAgent')
+        ->assertSee('[masked]')
+        ->assertSee('hash_hmac')
+        ->assertSee("unset(\$data['content'])", false)
+        ->assertSee('encrypted queued jobs')
+        ->assertSee('failed_jobs')
+        ->assertSee('until operators prune them')
         ->assertSee("payload->product !== 'assay'", false);
 });
 

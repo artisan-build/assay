@@ -58,7 +58,7 @@ it('accepts only an active installation-owned ingest credential and derives app 
             && ! str_contains($serialized, 'forged-app')
             && ! str_contains($serialized, Request::class)
             && ! str_contains($serialized, Credential::class)
-            && $job->envelope['records'][0]['content'] === ['instructions' => 'ALLOWED-CONTENT'];
+            && $job->envelope['records'][0]['content'] === '{"instructions":"ALLOWED-CONTENT"}';
     });
     expect($credential->credential->refresh()->last_used_at)->not->toBeNull();
 });

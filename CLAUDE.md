@@ -25,7 +25,7 @@ and role resolution. The hard gate is `composer ready`.
 
 ## Stack
 
-- PHP 8.3+ and Laravel 13.
+- PHP 8.4+ and Laravel 13.
 - PostgreSQL for local and CI tests; do not substitute SQLite for production-facing behavior.
 - Root Laravel server plus `packages/assay-contracts` and `packages/assay-client` Composer packages.
 - Nodeless: no Node, npm, Vite, or frontend build step.

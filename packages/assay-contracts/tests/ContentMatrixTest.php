@@ -51,6 +51,7 @@ it('round-trips every frozen content shape', function (array $payload): void {
     },
     'step end' => fn () => contentPayload(['type' => 'step.end', 'step' => 0, 'content' => ['output_text' => 'Done', 'structured_output' => ['ok' => true], 'tool_calls' => [['id' => 'call-1', 'name' => 'lookup', 'arguments' => []]]]]),
     'tool start' => fn () => contentPayload(['type' => 'tool.start', 'tool_invocation_id' => 'tool-1', 'content' => ['arguments' => ['id' => 1]]]),
+    'successful tool end' => fn () => contentPayload(['type' => 'tool.end', 'tool_invocation_id' => 'tool-1', 'outcome' => 'completed', 'content' => ['result' => ['ok' => true]]]),
     'failed tool end' => fn () => contentPayload(['type' => 'tool.end', 'tool_invocation_id' => 'tool-1', 'outcome' => 'failed', 'content' => ['result' => 'failed', 'exception_message' => 'Nope']]),
     'failed run end' => fn () => contentPayload(['type' => 'run.end', 'outcome' => 'failed', 'content' => ['exception_message' => 'Nope']]),
     'step fail' => fn () => contentPayload(['type' => 'step.fail', 'step' => 0, 'content' => ['exception_message' => 'Nope']]),
@@ -94,6 +95,27 @@ it('rejects invalid content on construction and wire decode', function (array $p
     'invalid role' => fn () => contentPayload(['type' => 'step.start', 'step' => 0, 'content' => ['message_hashes' => [str_repeat('a', 64)], 'new_messages' => [str_repeat('a', 64) => ['role' => 'developer']]]]),
     'uppercase hash' => fn () => contentPayload(['type' => 'step.start', 'step' => 0, 'content' => ['message_hashes' => [str_repeat('A', 64)]]]),
     'wrong nested type' => fn () => contentPayload(['content' => ['tools' => [['name' => 'x', 'description' => 'x', 'parameters' => []], 'bad']]]),
+    'new messages list instead of object' => fn () => contentPayload(['type' => 'step.start', 'step' => 0, 'content' => ['message_hashes' => [], 'new_messages' => []]]),
+    'tool parameters list instead of object' => fn () => contentPayload(['content' => ['tools' => [['name' => 'x', 'description' => 'x', 'parameters' => []]]]]),
     'empty content' => fn () => contentPayload(['content' => []]),
     'non finite' => fn () => contentPayload(['type' => 'tool.start', 'tool_invocation_id' => 'tool-1', 'content' => ['arguments' => INF]]),
 ]);
+
+it('preserves nested empty object and list types through the contract round trip', function (): void {
+    $content = matrixRoundTrip(contentPayload([
+        'type' => 'step.end',
+        'step' => 0,
+        'content' => [
+            'structured_output' => [
+                'empty_object' => (object) [],
+                'empty_list' => [],
+            ],
+        ],
+    ]))->content;
+
+    expect($content)->not->toBeNull()
+        ->and(json_encode($content, JSON_THROW_ON_ERROR))
+        ->toBe('{"structured_output":{"empty_object":{},"empty_list":[]}}')
+        ->and($content?->toArray()['structured_output']['empty_object'])->toBeInstanceOf(stdClass::class)
+        ->and($content?->toArray()['structured_output']['empty_list'])->toBe([]);
+});

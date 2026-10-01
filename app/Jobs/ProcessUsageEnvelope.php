@@ -39,7 +39,7 @@ final class ProcessUsageEnvelope implements ShouldBeEncrypted, ShouldQueue
                 $data = $record->toArray();
 
                 if ($record->content !== null) {
-                    $data['content'] = $record->content->toArray();
+                    $data['content'] = $record->content->toJson();
                 }
 
                 return $data;

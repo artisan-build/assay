@@ -27,7 +27,7 @@ provide replay and scoring in v1. Full product decisions and the build sequence 
 
 ## Local Development
 
-Requires PHP 8.3+, Composer, and PostgreSQL. Create local databases named `assay` and
+Requires PHP 8.4+, Composer, and PostgreSQL. Create local databases named `assay` and
 `assay_app_test`, then run:
 
 ```bash

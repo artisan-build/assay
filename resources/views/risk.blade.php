@@ -31,6 +31,7 @@
     <section data-testid="risk-queue-egress">
         <h2>Queue and egress</h2>
         <p>The client projects source events to primitive data, applies the hook, and places only an encrypted queued job on the host queue. Delivery retries are bounded to 24 hours by default; terminal failures are discarded and counted rather than retained in failed-job payloads.</p>
+        <p>The Assay server also places accepted envelopes in encrypted queued jobs. Content-bearing jobs remain in <code>jobs</code> while queued, and encrypted payloads plus failure details remain in <code>failed_jobs</code> after a terminal failure until operators prune them; failed-job pruning is therefore part of the content-retention promise.</p>
         <p>The forthcoming MCP surface is an additional content processor and egress path when content-scoped credentials are enabled. Its operator must account for the MCP host, model provider, and calling agent in data-processing decisions.</p>
     </section>
 
