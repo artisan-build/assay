@@ -55,9 +55,15 @@ final class CurationController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'retention_days' => ['sometimes', 'nullable', 'integer', 'between:1,36500'],
         ]);
+        $retentionDays = false;
+
+        if (array_key_exists('retention_days', $validated)) {
+            $retentionDays = $validated['retention_days'] === null ? null : (int) $validated['retention_days'];
+        }
+
         $dataset = $this->datasets->create(
             $validated['name'],
-            array_key_exists('retention_days', $validated) ? $validated['retention_days'] : false,
+            $retentionDays,
         );
 
         return $request->expectsJson()

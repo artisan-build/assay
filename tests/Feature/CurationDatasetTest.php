@@ -169,6 +169,20 @@ it('rejects incomplete content and derives replay fidelity only from omission pr
         ->and(DB::table('assay_dataset_items')->count())->toBe(2);
 });
 
+it('creates a dataset with custom retention from a browser form', function (): void {
+    $owner = createPr7User('Dataset Form Owner', UserRole::Owner);
+
+    $response = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Browser custom retention',
+        'retention_days' => '30',
+    ]);
+    $response->assertRedirect();
+    $dataset = DB::table('assay_datasets')->where('name', 'Browser custom retention');
+
+    $response->assertRedirect(route('assay.datasets.show', (string) $dataset->value('id')));
+    expect($dataset->value('retention_days'))->toBe(30);
+});
+
 it('exports deterministic live JSONL without storing an artifact and binds fresh downloads to the requesting principal', function (): void {
     $owner = createPr7User('Export Owner', UserRole::Owner);
     $other = createPr7User('Export Other Admin', UserRole::Admin);
