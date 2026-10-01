@@ -31,13 +31,14 @@
     <section data-testid="risk-retention">
         <h2>Retention and erasure model</h2>
         <p>The frozen operational defaults are 30 days for run content, 395 days for usage metadata, and 365 days for curated dataset items. Curated datasets are intentional copies and can outlive the run content from which they were created.</p>
-        <p>The content-store registry, retention jobs, erasure state machine, datasets, and pseudonymous tombstones are forthcoming surfaces. Tombstones are pseudonymous, not anonymous: usage remains correlatable without retaining the erased subject identifier.</p>
-        <p>Infrastructure backups are outside Assay's deletion guarantee. Operators should keep backup retention no longer than the content promise they make to users. In the forthcoming erasure surface, <code>assay:erasures:reapply</code> is a required post-restore runbook step; the command does not ship in this release.</p>
+        <p>The code-owned content-store registry drives scheduled, bounded retention across live per-record content, deduplicated messages, held attaches, and content-bearing queue residue. Delete-by-subject sweeps subject-associated stores, while queued, retried, and delayed records pass through the same barrier before writing. On-demand exports read live state, so erased content cannot reappear in a later export. Dataset retention is reserved for the curation surface.</p>
+        <p>Erasure replaces subjects on surviving usage metadata with versioned HMAC tombstones. Tombstones are pseudonymous, never anonymous or de-identified: usage remains correlatable without retaining the erased subject identifier. Retain old erasure-key versions during rotation; losing one disables historical subject lookup and its ingest barrier.</p>
+        <p>Infrastructure backups are outside Assay's deletion guarantee. Operators must keep backup retention no longer than the content promise they make to users. After restoring a database snapshot, running <code>assay:erasures:reapply --since=&lt;snapshot-time&gt;</code> before normal use is mandatory.</p>
     </section>
 
     <section data-testid="risk-queue-egress">
         <h2>Queue and egress</h2>
-        <p>The client projects source events to primitive data, applies the hook, and places only an encrypted queued job on the host queue. Delivery retries are bounded to 24 hours by default; terminal failures are discarded and counted rather than retained in failed-job payloads.</p>
+        <p>The client projects source events to primitive data, applies the hook, and places only an encrypted queued job on the host queue. Client queue delivery retries are bounded to 24 hours by default; terminal failures are discarded and counted rather than retained in failed-job payloads.</p>
         <p>The Assay server also places accepted envelopes in encrypted queued jobs. Content-bearing jobs remain in <code>jobs</code> while queued, and encrypted payloads plus failure details remain in <code>failed_jobs</code> after a terminal failure until operators prune them; failed-job pruning is therefore part of the content-retention promise.</p>
         <p>The forthcoming MCP surface is an additional content processor and egress path when content-scoped credentials are enabled. Its operator must account for the MCP host, model provider, and calling agent in data-processing decisions.</p>
     </section>

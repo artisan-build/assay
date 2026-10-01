@@ -6,6 +6,7 @@ use App\Services\UsageIngestProcessor;
 use ArtisanBuild\AssayContracts\UuidV7;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Symfony\Component\Process\Process;
 
 it('uses PostgreSQL uniqueness as the concurrent envelope and record idempotency arbiter', function (): void {
@@ -80,4 +81,54 @@ it('serializes distinct content attaches on the target so the first accepted att
     expect(DB::table('assay_content_attach_receipts')->where('status', 'accepted')->count())->toBe(1)
         ->and(DB::table('assay_content_attach_receipts')->where('reason', 'target_has_content')->count())->toBe(1)
         ->and(substr_count($content, 'RACE-CONTENT-'))->toBe(1);
+});
+
+it('leaves no content when subject erasure races content attach application', function (): void {
+    expect(Artisan::call('migrate:fresh', ['--database' => 'pgsql', '--force' => true]))->toBe(0);
+    Storage::disk('local')->deleteDirectory('assay/erasures');
+    $targetId = (string) UuidV7::generate();
+    $subject = 'concurrent-erasure-subject';
+    resolve(UsageIngestProcessor::class)->process('concurrent-attach-app', '2026-10-01T12:00:00.000000+00:00', [
+        'envelope_id' => (string) UuidV7::generate(),
+        'sent_at' => '2026-10-01T12:00:00.000000+00:00',
+        'client' => ['package' => 'artisan-build/assay-client', 'version' => '1.0.0'],
+        'sources' => [['driver' => 'laravel-ai', 'package' => 'laravel/ai', 'version' => '1.0.1']],
+        'environment' => 'testing',
+        'deploy' => null,
+        'dropped_transport_total' => 0,
+        'dropped_hook_total' => 0,
+        'records' => [[
+            'record_id' => $targetId,
+            'source' => 'laravel-ai',
+            'type' => 'run.start',
+            'operation' => 'agent',
+            'invocation_id' => 'concurrent-attach-run',
+            'attempt' => 1,
+            'at' => '2026-10-01T12:00:00.000000+00:00',
+            'capture' => 'usage',
+            'sampled' => false,
+            'subject' => $subject,
+        ]],
+    ]);
+    $appId = (string) DB::table('assay_apps')->where('app_ref', 'concurrent-attach-app')->value('id');
+    $processes = [
+        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-content-attach.php'), (string) UuidV7::generate(), (string) UuidV7::generate(), $targetId, 'ERASURE-RACE-CONTENT']),
+        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-erasure.php'), $appId, $subject, '2026-10-01T12:01:00.000000+00:00']),
+    ];
+
+    foreach ($processes as $process) {
+        $process->start();
+    }
+
+    foreach ($processes as $process) {
+        $process->wait();
+        expect($process->isSuccessful())->toBeTrue($process->getErrorOutput());
+    }
+
+    expect(DB::table('assay_record_content')->count())->toBe(0)
+        ->and(DB::table('assay_runs')->value('subject'))->toStartWith('deleted:')
+        ->and(DB::table('assay_erasure_records')->count())->toBe(1)
+        ->and(DB::table('assay_content_attach_receipts')->count())->toBe(1);
+
+    Storage::disk('local')->deleteDirectory('assay/erasures');
 });
