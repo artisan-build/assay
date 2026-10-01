@@ -77,6 +77,6 @@ final class ContentAccessController extends Controller
     {
         return $request->expectsJson()
             ? response()->json(['changed' => $changed])
-            : redirect()->route('assay.access.index');
+            : to_route('assay.access.index');
     }
 }

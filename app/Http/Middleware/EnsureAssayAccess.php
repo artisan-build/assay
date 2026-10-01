@@ -16,16 +16,16 @@ use Illuminate\Http\Request;
 use LogicException;
 use Symfony\Component\HttpFoundation\Response;
 
-final class EnsureAssayAccess
+final readonly class EnsureAssayAccess
 {
     public const string PRINCIPAL = 'assay.principal';
 
     public const string DECISION = 'assay.access';
 
     public function __construct(
-        private readonly BearerAuthenticator $bearer,
-        private readonly ActingPrincipalResolver $principals,
-        private readonly AssayAccessPolicy $policy,
+        private BearerAuthenticator $bearer,
+        private ActingPrincipalResolver $principals,
+        private AssayAccessPolicy $policy,
     ) {}
 
     /** @param Closure(Request): Response $next */

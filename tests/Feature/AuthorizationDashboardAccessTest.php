@@ -244,7 +244,7 @@ it('persists overrides through role and admission changes and deletes defaults a
     $this->actingAs($owner)->deleteJson(route('assay.access.reset', $member))
         ->assertOk()->assertJson(['changed' => false]);
 
-    $events = AppActionEvent::query()->orderBy('occurred_at')->get();
+    $events = AppActionEvent::query()->oldest('occurred_at')->get();
     expect($events)->toHaveCount(4)
         ->and($events->pluck('actor_ref')->unique()->values()->all())->toBe([(string) $owner->getKey()])
         ->and($events->pluck('action')->all())->toBe([
@@ -325,7 +325,7 @@ it('maps every explicit PR5 route to the central ability middleware', function (
     }
 
     expect(Route::getMiddlewareGroups())->not->toBe([])
-        ->and(app('router')->getMiddleware()['assay.access'] ?? null)->toBe(EnsureAssayAccess::class);
+        ->and(resolve('router')->getMiddleware()['assay.access'] ?? null)->toBe(EnsureAssayAccess::class);
 });
 
 it('denies every PR5 read to active ingest credentials and treats unknown or revoked bearers as unauthenticated', function (): void {

@@ -19,11 +19,11 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 
-final class ContentAccessOverrideService
+final readonly class ContentAccessOverrideService
 {
     public function __construct(
-        private readonly AssayAccessPolicy $policy,
-        private readonly AppActionRecorder $recorder,
+        private AssayAccessPolicy $policy,
+        private AppActionRecorder $recorder,
     ) {}
 
     public function set(

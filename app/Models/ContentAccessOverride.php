@@ -14,6 +14,8 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $set_by_actor_id
  * @property CarbonImmutable $set_at
  * @property string|null $reason
+ *
+ * @mixin IdeHelperContentAccessOverride
  */
 final class ContentAccessOverride extends Model
 {
