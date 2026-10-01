@@ -7,6 +7,7 @@ namespace App\Services;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 use stdClass;
 
 final class UsageIngestProcessor
@@ -471,6 +472,20 @@ final class UsageIngestProcessor
 
     private function decimal(mixed $value): string
     {
-        return is_int($value) ? (string) $value : sprintf('%.17g', (float) $value);
+        if (is_int($value)) {
+            return (string) $value;
+        }
+
+        $previousPrecision = ini_set('serialize_precision', '-1');
+
+        if ($previousPrecision === false) {
+            throw new RuntimeException('Unable to set deterministic decimal serialization precision.');
+        }
+
+        try {
+            return json_encode((float) $value, JSON_THROW_ON_ERROR);
+        } finally {
+            ini_set('serialize_precision', $previousPrecision);
+        }
     }
 }

@@ -154,6 +154,67 @@ it('keeps run end summaries authoritative after chronological recovery and failo
     }
 });
 
+it('stores reported decimal values exactly regardless of ambient serialization precision', function (): void {
+    $reportedValues = ['0.1', '0.2', '0.3', '1.1', '0.07', '812.4'];
+    $records = [];
+    $wireValues = [];
+
+    foreach ($reportedValues as $index => $reportedValue) {
+        $placeholder = 900_000_000 + $index;
+        $records[] = EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'reranking',
+            'invocation_id' => 'reported-decimal-'.$index,
+            'attempt' => null,
+            'outcome' => 'completed',
+            'usage' => ['search_units' => $placeholder],
+        ]);
+        $wireValues['"search_units":'.$placeholder] = '"search_units":'.$reportedValue;
+    }
+
+    for ($index = 0; $index < 10; $index++) {
+        $placeholder = 910_000_000 + $index;
+        $records[] = EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'reranking',
+            'invocation_id' => 'decimal-sum-'.$index,
+            'attempt' => null,
+            'outcome' => 'completed',
+            'usage' => ['search_units' => $placeholder],
+        ]);
+        $wireValues['"search_units":'.$placeholder] = '"search_units":0.1';
+    }
+
+    $wire = str_replace(array_keys($wireValues), array_values($wireValues), EnvelopeCodec::encode(EnvelopeFactory::envelope($records)), $replacementCount);
+    expect($replacementCount)->toBe(count($records));
+
+    $previousPrecision = ini_set('serialize_precision', '3');
+
+    try {
+        processEnvelope(EnvelopeCodec::decode($wire));
+        expect(ini_get('serialize_precision'))->toBe('3');
+    } finally {
+        if ($previousPrecision !== false) {
+            ini_set('serialize_precision', $previousPrecision);
+        }
+    }
+
+    $storedValues = DB::table('assay_usage_metrics')
+        ->join('assay_runs', 'assay_runs.id', '=', 'assay_usage_metrics.run_id')
+        ->whereIn('assay_runs.invocation_id', array_map(fn (int $index): string => 'reported-decimal-'.$index, array_keys($reportedValues)))
+        ->orderBy('assay_runs.invocation_id')
+        ->pluck('assay_usage_metrics.value')
+        ->all();
+    $sum = DB::table('assay_usage_metrics')
+        ->join('assay_runs', 'assay_runs.id', '=', 'assay_usage_metrics.run_id')
+        ->where('assay_runs.invocation_id', 'like', 'decimal-sum-%')
+        ->selectRaw('SUM(assay_usage_metrics.value)::text AS total')
+        ->value('total');
+
+    expect($storedValues)->toBe($reportedValues)
+        ->and($sum)->toBe('1.0');
+});
+
 it('preserves round trip decimal fidelity and checksum comparisons near the precision boundary', function (): void {
     $envelope = EnvelopeFactory::envelope([
         EnvelopeFactory::record([
