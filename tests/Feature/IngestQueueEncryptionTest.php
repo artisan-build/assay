@@ -2,11 +2,12 @@
 
 declare(strict_types=1);
 
+use App\Exceptions\ContentPersistenceFailed;
 use App\Jobs\ProcessUsageEnvelope;
 use App\Services\UsageIngestProcessor;
+use ArtisanBuild\AssayContracts\UuidV7;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
-use Illuminate\Database\QueryException;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Queue\Failed\FailedJobProviderInterface;
 use Illuminate\Support\Arr;
@@ -79,73 +80,94 @@ it('encrypts full content in database queue and failure payloads', function (): 
         ->and(DB::table('assay_messages')->count())->toBe(0);
 });
 
-it('masks content bindings in PostgreSQL exceptions logs and database failed jobs', function (): void {
-    $canary = 'CONTENT-WRITE-FAILURE-CANARY';
-    DB::unprepared(<<<'SQL'
-        CREATE OR REPLACE FUNCTION assay_reject_record_content()
-        RETURNS trigger AS $$
-        BEGIN
-            RAISE EXCEPTION 'forced content write failure';
-        END;
-        $$ LANGUAGE plpgsql
-        SQL);
-    DB::unprepared(<<<'SQL'
-        CREATE TRIGGER assay_reject_record_content
-        BEFORE INSERT ON assay_record_content
-        FOR EACH ROW EXECUTE FUNCTION assay_reject_record_content()
-        SQL);
+it('replaces content database failures with value-free exceptions in direct queue and log surfaces', function (string $failure, string $sqlState): void {
+    $canary = $failure === 'null'
+        ? 'NULL-ORIGIN-CONTENT-CANARY'
+        : 'CONSTRAINT-CONTENT-CANARY';
+    $databaseDiagnostic = $failure === 'null'
+        ? 'unsupported Unicode escape sequence'
+        : 'violates check constraint';
+    $recordId = (string) UuidV7::generate();
+
+    if ($failure === 'constraint') {
+        DB::statement(<<<'SQL'
+            ALTER TABLE assay_record_content
+            ADD CONSTRAINT assay_test_reject_content CHECK ((content->>'output_text') <> 'CONSTRAINT-CONTENT-CANARY')
+            SQL);
+    }
 
     $job = static fn (string $app): ProcessUsageEnvelope => ProcessUsageEnvelope::fromContract(
         $app,
         '2026-10-01T12:00:00.000000+00:00',
         EnvelopeFactory::envelope([
             EnvelopeFactory::record([
+                'record_id' => $recordId,
                 'type' => 'step.end',
                 'capture' => 'full',
                 'step' => 0,
-                'content' => ['output_text' => $canary],
+                'content' => ['output_text' => $canary.($failure === 'null' ? "\0suffix" : '')],
             ]),
         ]),
     );
-
-    $exception = null;
+    $direct = null;
 
     try {
-        $job('direct-failure-app')->handle(resolve(UsageIngestProcessor::class));
-    } catch (QueryException $caught) {
-        $exception = $caught;
+        $job('direct-'.$failure.'-failure-app')->handle(resolve(UsageIngestProcessor::class));
+    } catch (Throwable $caught) {
+        $direct = $caught;
     }
 
-    expect($exception)->toBeInstanceOf(QueryException::class)
-        ->and($exception?->getMessage())->not->toContain($canary)
+    expect($direct)->toBeInstanceOf(ContentPersistenceFailed::class)
+        ->and($direct?->recordId)->toBe($recordId)
+        ->and($direct?->sqlState)->toBe($sqlState)
+        ->and($direct?->getMessage())->toContain($recordId, $sqlState)
+        ->not->toContain($canary, $databaseDiagnostic, 'Connection:', 'insert into')
+        ->and((string) $direct)->not->toContain($canary, $databaseDiagnostic, 'Connection:', 'insert into')
+        ->and($direct?->getPrevious())->toBeNull()
         ->and(DB::connection()->getConfig('mask_bindings_in_exception_messages'))->toBeTrue();
 
+    $logPath = storage_path('logs/content-persistence-'.$failure.'.log');
+    @unlink($logPath);
+    config()->set('logging.default', 'single');
+    config()->set('logging.channels.single.path', $logPath);
+    Log::setDefaultDriver('single');
+    Log::forgetChannel('single');
     $logs = [];
     Log::listen(static function (MessageLogged $event) use (&$logs): void {
         $logs[] = $event->message;
 
         foreach ($event->context as $value) {
             if ($value instanceof Throwable) {
-                $logs[] = $value->getMessage();
+                $logs[] = (string) $value;
             } elseif (is_scalar($value)) {
                 $logs[] = (string) $value;
             }
         }
     });
 
-    Queue::connection('database')->push($job('queued-failure-app'), queue: 'content-write-failure');
+    $queue = 'content-'.$failure.'-failure';
+    Queue::connection('database')->push($job('queued-'.$failure.'-failure-app'), queue: $queue);
     Artisan::call('queue:work', [
         'connection' => 'database',
-        '--queue' => 'content-write-failure',
+        '--queue' => $queue,
         '--once' => true,
         '--tries' => 1,
     ]);
 
-    $failed = DB::table('failed_jobs')->where('queue', 'content-write-failure')->sole();
+    $failed = DB::table('failed_jobs')->where('queue', $queue)->sole();
+    $logOutput = is_file($logPath) ? (string) file_get_contents($logPath) : '';
 
     expect((string) $failed->payload)->not->toContain($canary)
-        ->and((string) $failed->exception)->not->toContain($canary)
-        ->and((string) $failed->exception)->toContain('forced content write failure')
+        ->and((string) $failed->exception)->toContain(ContentPersistenceFailed::class, $recordId, $sqlState)
+        ->not->toContain($canary, $databaseDiagnostic, 'Connection:', 'insert into')
         ->and($logs)->not->toBeEmpty()
-        ->and(implode("\n", $logs))->not->toContain($canary);
-});
+        ->and(implode("\n", $logs))->toContain(ContentPersistenceFailed::class, $recordId, $sqlState)
+        ->not->toContain($canary, $databaseDiagnostic, 'Connection:', 'insert into')
+        ->and($logOutput)->toContain('Content persistence failed', $recordId, $sqlState)
+        ->not->toContain($canary, $databaseDiagnostic, 'Connection:', 'insert into');
+
+    @unlink($logPath);
+})->with([
+    'null-origin PostgreSQL JSONB failure' => ['null', '22P05'],
+    'content constraint violation' => ['constraint', '23514'],
+]);

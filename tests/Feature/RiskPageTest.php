@@ -23,6 +23,8 @@ it('renders the authorized risk disclosures and shipped hook recipes', function 
         ->assertSee('Infrastructure backups', false)
         ->assertSee('assay:erasures:reapply')
         ->assertSee('performs no redaction')
+        ->assertSee('U+0000')
+        ->assertSee('U+FFFD')
         ->assertSee('forthcoming MCP surface')
         ->assertSee('PayloadFilter')
         ->assertSee('OutboundPayload')

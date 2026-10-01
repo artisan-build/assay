@@ -13,7 +13,7 @@
     <section data-testid="risk-storage">
         <h2>What full capture stores</h2>
         <p>Usage mode stores identifiers, model usage, timings, agent and tool names, outcomes, and failure classes. Full mode can additionally store instructions, message text, model output, structured output, tool arguments and results, exception messages, and supported non-agent inputs and outputs.</p>
-        <p>The client applies your payload filter before its encrypted queued job is created. Accepted content is then stored in this Assay installation's PostgreSQL database as per-record content and deduplicated message bodies. Assay performs no redaction, PII detection, or content classification.</p>
+        <p>The client applies your payload filter before its encrypted queued job is created. U+0000 in captured content strings is normalized to U+FFFD before delivery and again before server storage. Accepted content is then stored in this Assay installation's PostgreSQL database as per-record content and deduplicated message bodies. Assay performs no redaction, PII detection, or content classification.</p>
     </section>
 
     <section data-testid="risk-access">

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Exceptions\ContentPersistenceFailed;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PDOException;
 use RuntimeException;
 use stdClass;
 
@@ -126,7 +128,7 @@ final class UsageIngestProcessor
         }
 
         if (isset($record['content'])) {
-            $this->content($recordRowId, $runId, $record);
+            $this->content($recordRowId, $runId, (string) $record['record_id'], $record);
         }
 
         $this->reconcileRun($runId, CarbonImmutable::parse($receivedAt));
@@ -363,7 +365,17 @@ final class UsageIngestProcessor
     }
 
     /** @param array<string, mixed> $record */
-    private function content(string $recordId, string $runId, array $record): void
+    private function content(string $recordId, string $runId, string $sourceRecordId, array $record): void
+    {
+        try {
+            $this->persistContent($recordId, $runId, $record);
+        } catch (PDOException $exception) {
+            throw ContentPersistenceFailed::fromDatabase($exception, $sourceRecordId);
+        }
+    }
+
+    /** @param array<string, mixed> $record */
+    private function persistContent(string $recordId, string $runId, array $record): void
     {
         $contentObject = is_string($record['content'])
             ? json_decode($record['content'], false, 512, JSON_THROW_ON_ERROR)
@@ -400,7 +412,9 @@ final class UsageIngestProcessor
                 ]);
             }
 
-            unset($content['new_messages']);
+            if (get_object_vars($newMessages) !== []) {
+                unset($content['new_messages']);
+            }
         }
 
         if ($content !== []) {

@@ -34,6 +34,17 @@ function filteredRecorder(Container $container, InMemoryDropCounter $drops, Coll
     );
 }
 
+function passThroughPayloadFilter(): PayloadFilter
+{
+    return new class implements PayloadFilter
+    {
+        public function filter(OutboundPayload $payload): OutboundPayload
+        {
+            return $payload;
+        }
+    };
+}
+
 it('resolves the released filter for every record and restores all protected fields', function (): void {
     $container = new Container;
     $drops = new InMemoryDropCounter;
@@ -231,4 +242,130 @@ it('hashes post-hook messages, deduplicates bodies, and prunes at run end', func
         ->and($secondContent)->toBe(['message_hashes' => [$expectedHash, $secondHash], 'new_messages' => [$secondHash => $secondMessage]])
         ->and($afterPrune)->toBe(['message_hashes' => [$expectedHash], 'new_messages' => [$expectedHash => $masked]])
         ->and($dispatcher->dispatched[0]['json'])->not->toContain('first secret');
+});
+
+it('preserves canonical message JSON identity through pass-through filtering and deduplication', function (): void {
+    $container = new Container;
+    $drops = new InMemoryDropCounter;
+    $dispatcher = new CollectingDispatcher;
+    $container->instance(PayloadFilter::class, passThroughPayloadFilter());
+    $recorder = filteredRecorder($container, $drops, $dispatcher);
+    $message = [
+        'role' => 'assistant',
+        'tool_calls' => [
+            [
+                'arguments' => (object) [],
+                'id' => 'empty-arguments',
+                'name' => 'empty',
+            ],
+            [
+                'arguments' => (object) [
+                    'empty_list' => [],
+                    'empty_object' => (object) [],
+                    'populated_list' => [(object) ['value' => 1], false, null],
+                ],
+                'id' => 'nested-arguments',
+                'name' => 'nested',
+            ],
+        ],
+    ];
+    $canonicalBody = json_encode(
+        $message,
+        JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+    );
+    $hash = hash('sha256', $canonicalBody);
+    $step = static fn (int $attempt): StepInput => new StepInput(
+        type: RecordType::StepStart,
+        invocationId: 'identity-run',
+        attempt: $attempt,
+        step: 0,
+        at: new DateTimeImmutable,
+        capture: CaptureMode::Full,
+        sampled: true,
+        content: new Content([
+            'message_hashes' => [$hash],
+            'new_messages' => [$hash => $message],
+        ]),
+    );
+
+    $recorder->record($step(1));
+    $recorder->record($step(2));
+    $recorder->flush();
+
+    $wire = $dispatcher->dispatched[0]['json'];
+    $records = EnvelopeCodec::decode($wire)->records;
+    $first = $records[0]->content?->jsonSerialize();
+    $second = $records[1]->content?->jsonSerialize();
+    assert($first instanceof stdClass);
+    assert($second instanceof stdClass);
+    assert($first->new_messages instanceof stdClass);
+
+    expect($wire)->toContain('"'.$hash.'":'.$canonicalBody)
+        ->and($first->message_hashes)->toBe([$hash])
+        ->and($first->new_messages->{$hash}->tool_calls[0]->arguments)->toBeInstanceOf(stdClass::class)
+        ->and($first->new_messages->{$hash}->tool_calls[1]->arguments->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($first->new_messages->{$hash}->tool_calls[1]->arguments->empty_list)->toBe([])
+        ->and($first->new_messages->{$hash}->tool_calls[1]->arguments->populated_list)->toHaveCount(3)
+        ->and($second->message_hashes)->toBe([$hash])
+        ->and($second->new_messages)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($second->new_messages))->toBe([])
+        ->and($drops->hookTotal())->toBe(0)
+        ->and($drops->transportTotal())->toBe(0);
+});
+
+it('normalizes null characters recursively after the payload hook without changing JSON shapes', function (): void {
+    $container = new Container;
+    $dispatcher = new CollectingDispatcher;
+    $container->instance(PayloadFilter::class, passThroughPayloadFilter());
+    $recorder = filteredRecorder($container, new InMemoryDropCounter, $dispatcher);
+    $message = ['role' => 'user', 'text' => "message\0value"];
+    $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    $normalizedMessage = ['role' => 'user', 'text' => "message\u{FFFD}value"];
+    $normalizedHash = hash('sha256', json_encode($normalizedMessage, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    $recorder->record(new StepInput(
+        type: RecordType::StepStart,
+        invocationId: 'null-normalization-run',
+        attempt: 1,
+        step: 0,
+        at: new DateTimeImmutable,
+        capture: CaptureMode::Full,
+        sampled: true,
+        content: new Content([
+            'message_hashes' => [$hash],
+            'new_messages' => [$hash => $message],
+        ]),
+    ));
+    $recorder->record(new StepInput(
+        type: RecordType::StepEnd,
+        invocationId: 'null-normalization-run',
+        attempt: 1,
+        step: 1,
+        at: new DateTimeImmutable,
+        capture: CaptureMode::Full,
+        sampled: true,
+        content: new Content([
+            'output_text' => "outer\0value",
+            'structured_output' => (object) [
+                'empty_object' => (object) [],
+                'list' => ["list\0value", 7, false, null],
+                'nested' => (object) ['text' => "nested\0value"],
+            ],
+        ]),
+    ));
+    $recorder->flush();
+
+    $records = EnvelopeCodec::decode($dispatcher->dispatched[0]['json'])->records;
+    $messageContent = $records[0]->content?->jsonSerialize();
+    $content = $records[1]->content?->jsonSerialize();
+    assert($messageContent instanceof stdClass);
+    assert($content instanceof stdClass);
+
+    expect($messageContent->message_hashes)->toBe([$normalizedHash])
+        ->and($messageContent->new_messages->{$normalizedHash}->text)->toBe("message\u{FFFD}value")
+        ->and($content->output_text)->toBe("outer\u{FFFD}value")
+        ->and($content->structured_output)->toBeInstanceOf(stdClass::class)
+        ->and($content->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($content->structured_output->list)->toBe(["list\u{FFFD}value", 7, false, null])
+        ->and($content->structured_output->nested)->toBeInstanceOf(stdClass::class)
+        ->and($content->structured_output->nested->text)->toBe("nested\u{FFFD}value");
 });

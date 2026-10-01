@@ -5,11 +5,13 @@ declare(strict_types=1);
 use App\Jobs\ProcessUsageEnvelope;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\Source;
+use ArtisanBuild\AssayContracts\UuidV7;
 use ArtisanBuild\BuiltForCloud\Credential;
 use ArtisanBuild\BuiltForCloud\CredentialPurpose;
 use ArtisanBuild\BuiltForCloud\SubjectType;
 use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
+use ArtisanBuild\BuiltForCloud\UserRole;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -266,6 +268,174 @@ it('rejects invalid content before dispatch or writes without logging the reques
     foreach (['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug', 'log'] as $level) {
         Log::shouldNotHaveReceived($level);
     }
+});
+
+it('preserves JSON object and list identity through real ingest storage and the run tree', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'identity-route-app',
+    ]);
+    $structuredRecordId = (string) UuidV7::generate();
+    $envelope = EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'capture' => 'full',
+            'invocation_id' => 'identity-route-run',
+            'content' => [
+                'instructions' => 'identity route',
+                'tools' => [[
+                    'name' => 'no_parameters',
+                    'description' => 'No parameters',
+                    'parameters' => (object) [],
+                ]],
+            ],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.start',
+            'capture' => 'full',
+            'invocation_id' => 'identity-route-run',
+            'step' => 0,
+            'content' => ['message_hashes' => [], 'new_messages' => (object) []],
+        ]),
+        EnvelopeFactory::record([
+            'record_id' => $structuredRecordId,
+            'type' => 'step.end',
+            'capture' => 'full',
+            'invocation_id' => 'identity-route-run',
+            'step' => 0,
+            'content' => [
+                'output_text' => 'identity output',
+                'structured_output' => (object) [
+                    'empty_object' => (object) [],
+                    'empty_list' => [],
+                    'populated_list' => [(object) ['value' => true]],
+                ],
+            ],
+        ]),
+    ]);
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], EnvelopeCodec::encode($envelope))->assertAccepted();
+
+    $stored = json_decode((string) DB::table('assay_record_content')
+        ->join('assay_records', 'assay_records.id', '=', 'assay_record_content.record_id')
+        ->where('assay_records.record_id', $structuredRecordId)
+        ->value('content'), false, flags: JSON_THROW_ON_ERROR);
+    $admin = User::query()->create(['name' => 'Identity Admin', 'email' => 'identity-admin@example.test']);
+    $admin->forceFill(['role' => UserRole::Admin->value])->save();
+    $runId = (string) DB::table('assay_runs')->where('invocation_id', 'identity-route-run')->value('id');
+    $tree = json_decode((string) $this->actingAs($admin)
+        ->getJson(route('assay.runs.tree', $runId))
+        ->assertOk()
+        ->getContent(), false, flags: JSON_THROW_ON_ERROR);
+    $runStart = collect($tree->rows[0]->content_records)->firstWhere('type', 'run.start');
+    $stepStart = collect($tree->rows[0]->content_records)->firstWhere('type', 'step.start');
+    $stepEnd = collect($tree->rows[0]->content_records)->firstWhere('type', 'step.end');
+
+    expect($stored->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($stored->structured_output->empty_list)->toBe([])
+        ->and($stored->structured_output->populated_list)->toHaveCount(1)
+        ->and($runStart->content->tools[0]->parameters)->toBeInstanceOf(stdClass::class)
+        ->and($stepStart->content->new_messages)->toBeInstanceOf(stdClass::class)
+        ->and($stepEnd->content->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($stepEnd->content->structured_output->empty_list)->toBe([]);
+});
+
+it('accepts a mixed envelope when one content record contains an empty object', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'mixed-route-app',
+    ]);
+    $envelope = EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'unrelated-usage-run',
+            'step' => 0,
+            'usage' => ['input_tokens' => 13],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.start',
+            'capture' => 'full',
+            'invocation_id' => 'mixed-content-run',
+            'step' => 0,
+            'content' => ['message_hashes' => [], 'new_messages' => (object) []],
+        ]),
+    ]);
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], EnvelopeCodec::encode($envelope))->assertAccepted();
+
+    expect(DB::table('assay_records')->count())->toBe(2)
+        ->and(DB::table('assay_usage_metrics')
+            ->join('assay_runs', 'assay_runs.id', '=', 'assay_usage_metrics.run_id')
+            ->where('assay_runs.invocation_id', 'unrelated-usage-run')
+            ->where('metric', 'input_tokens')
+            ->value('value'))->toBe('13');
+});
+
+it('normalizes null characters in content strings before PostgreSQL persistence', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'null-route-app',
+    ]);
+    $recordId = (string) UuidV7::generate();
+    $message = ['role' => 'user', 'text' => "server message\0value"];
+    $hash = hash('sha256', json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    $normalizedMessage = ['role' => 'user', 'text' => "server message\u{FFFD}value"];
+    $normalizedHash = hash('sha256', json_encode($normalizedMessage, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    $envelope = EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'type' => 'step.start',
+            'capture' => 'full',
+            'invocation_id' => 'null-route-run',
+            'step' => 0,
+            'content' => [
+                'message_hashes' => [$hash],
+                'new_messages' => [$hash => $message],
+            ],
+        ]),
+        EnvelopeFactory::record([
+            'record_id' => $recordId,
+            'type' => 'step.end',
+            'capture' => 'full',
+            'invocation_id' => 'null-route-run',
+            'step' => 0,
+            'content' => [
+                'output_text' => "server\0value",
+                'structured_output' => (object) [
+                    'nested' => ["list\0value", (object) ['text' => "object\0value"]],
+                    'empty_object' => (object) [],
+                ],
+            ],
+        ]),
+    ]);
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], EnvelopeCodec::encode($envelope))->assertAccepted();
+
+    $storedJson = (string) DB::table('assay_record_content')
+        ->join('assay_records', 'assay_records.id', '=', 'assay_record_content.record_id')
+        ->where('assay_records.record_id', $recordId)
+        ->value('content');
+    $stored = json_decode($storedJson, false, flags: JSON_THROW_ON_ERROR);
+    $storedMessage = json_decode((string) DB::table('assay_messages')->sole()->body, false, flags: JSON_THROW_ON_ERROR);
+
+    expect($storedJson)->not->toContain('\\u0000')
+        ->and($stored->output_text)->toBe("server\u{FFFD}value")
+        ->and($stored->structured_output->nested[0])->toBe("list\u{FFFD}value")
+        ->and($stored->structured_output->nested[1]->text)->toBe("object\u{FFFD}value")
+        ->and($stored->structured_output->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($storedMessage->text)->toBe("server message\u{FFFD}value")
+        ->and(DB::table('assay_messages')->sole()->hash)->toBe($normalizedHash)
+        ->and(DB::table('assay_message_references')->sole()->hash)->toBe($normalizedHash);
 });
 
 it('publishes envelope capabilities without authentication', function (): void {

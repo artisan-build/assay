@@ -24,6 +24,7 @@ use ArtisanBuild\BuiltForCloudContracts\PayloadFilter;
 use DateTimeImmutable;
 use Illuminate\Contracts\Container\Container;
 use InvalidArgumentException;
+use stdClass;
 use Throwable;
 
 final class BufferedRecorder implements Recorder
@@ -135,7 +136,13 @@ final class BufferedRecorder implements Recorder
             throw new InvalidArgumentException('The Assay payload filter must return record data as an array.');
         }
 
-        return (new HookBoundary)->restore($record, $this->rehashMessages($filtered->data));
+        $data = $filtered->data;
+
+        if (array_key_exists('content', $data)) {
+            $data['content'] = $this->normalizeContentStrings($data['content']);
+        }
+
+        return (new HookBoundary)->restore($record, $this->rehashMessages($data));
     }
 
     /**
@@ -148,20 +155,27 @@ final class BufferedRecorder implements Recorder
             return $data;
         }
 
-        $content = json_decode(json_encode($data['content'], JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+        $contentValue = $data['content'];
+        $content = $contentValue instanceof stdClass
+            ? get_object_vars($contentValue)
+            : $contentValue;
 
         if (! is_array($content)
             || ! isset($content['message_hashes'], $content['new_messages'])
             || ! is_array($content['message_hashes'])
-            || ! is_array($content['new_messages'])) {
+            || (! is_array($content['new_messages']) && ! $content['new_messages'] instanceof stdClass)) {
             return $data;
         }
 
         $replacements = [];
         $messages = [];
+        $newMessages = $content['new_messages'] instanceof stdClass
+            ? get_object_vars($content['new_messages'])
+            : $content['new_messages'];
 
-        foreach ($content['new_messages'] as $hash => $message) {
-            if (! is_string($hash) || ! is_array($message)) {
+        foreach ($newMessages as $hash => $message) {
+            if (! is_string($hash)
+                || (! is_array($message) && ! $message instanceof stdClass)) {
                 continue;
             }
 
@@ -177,8 +191,8 @@ final class BufferedRecorder implements Recorder
             static fn (mixed $hash): mixed => is_string($hash) ? ($replacements[$hash] ?? $hash) : $hash,
             $content['message_hashes'],
         );
-        $content['new_messages'] = $messages === [] ? (object) [] : $messages;
-        $data['content'] = $content;
+        $content['new_messages'] = (object) $messages;
+        $data['content'] = $contentValue instanceof stdClass ? (object) $content : $content;
 
         return $data;
     }
@@ -192,13 +206,14 @@ final class BufferedRecorder implements Recorder
         $content = $record->content->toArray();
         $hashes = $content['message_hashes'] ?? [];
         $messages = $content['new_messages'] ?? [];
+        $messageMap = $messages instanceof stdClass ? get_object_vars($messages) : $messages;
         $ordered = [];
         $new = [];
 
         foreach ($hashes as $hash) {
-            $message = $messages[$hash] ?? null;
+            $message = is_array($messageMap) && is_string($hash) ? ($messageMap[$hash] ?? null) : null;
 
-            if (is_array($message)) {
+            if (is_array($message) || $message instanceof stdClass) {
                 $hash = hash('sha256', json_encode(
                     $this->canonicalize($message),
                     JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
@@ -214,13 +229,20 @@ final class BufferedRecorder implements Recorder
         }
 
         $content['message_hashes'] = $ordered;
-        $content['new_messages'] = $new === [] ? (object) [] : $new;
+        $content['new_messages'] = (object) $new;
 
         return (new HookBoundary)->restore($record, ['content' => $content]);
     }
 
     private function canonicalize(mixed $value): mixed
     {
+        if ($value instanceof stdClass) {
+            $properties = get_object_vars($value);
+            ksort($properties, SORT_STRING);
+
+            return (object) array_map($this->canonicalize(...), $properties);
+        }
+
         if (! is_array($value)) {
             return $value;
         }
@@ -232,6 +254,19 @@ final class BufferedRecorder implements Recorder
         ksort($value, SORT_STRING);
 
         return array_map($this->canonicalize(...), $value);
+    }
+
+    private function normalizeContentStrings(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return str_replace("\0", "\u{FFFD}", $value);
+        }
+
+        if ($value instanceof stdClass) {
+            return (object) array_map($this->normalizeContentStrings(...), get_object_vars($value));
+        }
+
+        return is_array($value) ? array_map($this->normalizeContentStrings(...), $value) : $value;
     }
 
     public function flush(): void
