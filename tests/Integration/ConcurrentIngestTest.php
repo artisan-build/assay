@@ -12,8 +12,8 @@ it('uses PostgreSQL uniqueness as the concurrent envelope and record idempotency
 
     $recordId = (string) UuidV7::generate();
     $processes = [
-        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-ingest.php'), (string) UuidV7::generate(), $recordId]),
-        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-ingest.php'), (string) UuidV7::generate(), $recordId]),
+        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-ingest.php'), (string) UuidV7::generate(), $recordId, '10', '2']),
+        new Process([PHP_BINARY, base_path('tests/Fixtures/concurrent-ingest.php'), (string) UuidV7::generate(), $recordId, '3', '8']),
     ];
 
     foreach ($processes as $process) {
@@ -25,8 +25,12 @@ it('uses PostgreSQL uniqueness as the concurrent envelope and record idempotency
         expect($process->isSuccessful())->toBeTrue($process->getErrorOutput());
     }
 
+    $app = DB::table('assay_apps')->sole();
+
     expect(DB::table('assay_apps')->count())->toBe(1)
         ->and(DB::table('assay_envelopes')->count())->toBe(2)
         ->and(DB::table('assay_records')->count())->toBe(1)
-        ->and(DB::table('assay_runs')->count())->toBe(1);
+        ->and(DB::table('assay_runs')->count())->toBe(1)
+        ->and($app->dropped_transport_total)->toBe(10)
+        ->and($app->dropped_hook_total)->toBe(8);
 });

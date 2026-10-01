@@ -4,25 +4,28 @@ declare(strict_types=1);
 
 use App\Jobs\ProcessUsageEnvelope;
 use ArtisanBuild\AssayContracts\EnvelopeCodec;
+use ArtisanBuild\AssayContracts\Source;
 use ArtisanBuild\BuiltForCloud\Credential;
 use ArtisanBuild\BuiltForCloud\CredentialPurpose;
 use ArtisanBuild\BuiltForCloud\SubjectType;
 use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
-use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Tests\Support\EnvelopeFactory;
 
 uses(WithCredentials::class);
 
-it('excludes request forgery protection from only the ingest route', function (): void {
+it('registers machine routes outside the web middleware group', function (): void {
     $ingest = Route::getRoutes()->match(Request::create('/ingest', 'POST'));
     $capabilities = Route::getRoutes()->match(Request::create('/capabilities', 'GET'));
 
-    expect($ingest->excludedMiddleware())->toContain(PreventRequestForgery::class)
-        ->and($capabilities->excludedMiddleware())->not->toContain(PreventRequestForgery::class);
+    expect($ingest->middleware())->not->toContain('web')
+        ->and($capabilities->middleware())->not->toContain('web')
+        ->and($ingest->excludedMiddleware())->toBe([])
+        ->and($capabilities->excludedMiddleware())->toBe([]);
 });
 
 it('accepts only an active installation-owned ingest credential and derives app identity from it', function (): void {
@@ -36,14 +39,15 @@ it('accepts only an active installation-owned ingest credential and derives app 
         EnvelopeFactory::record([
             'capture' => 'full',
             'content' => ['secret' => 'CONTENT-CANARY'],
-            'forged_app' => 'forged-app',
         ]),
     ]);
+    $body = json_decode(EnvelopeCodec::encode($envelope), true, flags: JSON_THROW_ON_ERROR);
+    $body['app_id'] = 'forged-app';
 
     $this->call('POST', '/ingest', [], [], [], [
         'CONTENT_TYPE' => 'application/json',
         'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
-    ], EnvelopeCodec::encode($envelope))->assertAccepted();
+    ], json_encode($body, JSON_THROW_ON_ERROR))->assertAccepted();
 
     Bus::assertDispatched(ProcessUsageEnvelope::class, function (ProcessUsageEnvelope $job): bool {
         $serialized = serialize($job);
@@ -57,6 +61,82 @@ it('accepts only an active installation-owned ingest credential and derives app 
     });
     expect($credential->credential->refresh()->last_used_at)->not->toBeNull();
 });
+
+it('creates no session row or cookie for anonymous or authenticated machine requests', function (): void {
+    config()->set('session.driver', 'database');
+    Bus::fake();
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'credential-app',
+    ]);
+
+    $this->postJson('/ingest', [])
+        ->assertUnauthorized()
+        ->assertHeaderMissing('Set-Cookie');
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], EnvelopeCodec::encode(EnvelopeFactory::envelope([])))
+        ->assertAccepted()
+        ->assertHeaderMissing('Set-Cookie');
+
+    expect(DB::table('sessions')->count())->toBe(0);
+});
+
+it('rejects body overflow by actual bytes before usage writes or dispatch', function (): void {
+    config()->set('assay.ingest.max_body_bytes', 32);
+    Bus::fake();
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'credential-app',
+    ]);
+
+    $response = $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'CONTENT_LENGTH' => '',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], str_repeat('x', 33));
+
+    $response->assertStatus(413)
+        ->assertContent('{"error":"payload_too_large","limit_bytes":32}');
+    Bus::assertNothingDispatched();
+    expect($credential->credential->refresh()->last_used_at)->toBeNull()
+        ->and(DB::table('assay_apps')->count())->toBe(0)
+        ->and(DB::table('assay_envelopes')->count())->toBe(0);
+});
+
+it('rejects decoded cardinality overflow before usage writes or dispatch', function (string $kind): void {
+    config()->set('assay.ingest.max_records', 1);
+    config()->set('assay.ingest.max_sources', 1);
+    Bus::fake();
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'credential-app',
+    ]);
+    $envelope = EnvelopeFactory::envelope($kind === 'records'
+        ? [EnvelopeFactory::record(), EnvelopeFactory::record()]
+        : []);
+    $body = json_decode(EnvelopeCodec::encode($envelope), true, flags: JSON_THROW_ON_ERROR);
+
+    if ($kind === 'sources') {
+        $body['sources'][] = (new Source('other', 'vendor/other', '1.0.0'))->toArray();
+    }
+
+    $response = $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], json_encode($body, JSON_THROW_ON_ERROR));
+
+    $response->assertStatus(413)->assertContent($kind === 'records'
+        ? '{"error":"too_many_records","limit":1}'
+        : '{"error":"too_many_sources","limit":1}');
+    Bus::assertNothingDispatched();
+    expect($credential->credential->refresh()->last_used_at)->toBeNull()
+        ->and(DB::table('assay_apps')->count())->toBe(0);
+})->with(['records', 'sources']);
 
 it('rejects the complete credential-negative matrix without dispatching or recording usage', function (string $case): void {
     Bus::fake();

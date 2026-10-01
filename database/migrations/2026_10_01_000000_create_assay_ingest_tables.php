@@ -73,6 +73,7 @@ return new class extends Migration
             $table->text('responded_model')->nullable();
             $table->timestampTz('started_at', 6)->nullable();
             $table->timestampTz('ended_at', 6)->nullable();
+            $table->timestampTz('earliest_received_at', 6);
             $table->timestampTz('started_received_at', 6)->nullable();
             $table->timestampTz('ended_received_at', 6)->nullable();
             $table->string('outcome', 16)->nullable();
@@ -85,7 +86,7 @@ return new class extends Migration
             $table->unsignedInteger('terminal_attempt')->nullable();
             $table->boolean('checksum_mismatch')->default(false);
             $table->unique(['app_id', 'invocation_id']);
-            $table->index(['status', 'started_received_at']);
+            $table->index(['status', 'earliest_received_at', 'id']);
         });
 
         Schema::table('assay_runs', function (Blueprint $table): void {

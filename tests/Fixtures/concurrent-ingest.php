@@ -12,6 +12,8 @@ $app->make(Kernel::class)->bootstrap();
 
 $envelopeId = $argv[1] ?? throw new RuntimeException('Envelope id is required.');
 $recordId = $argv[2] ?? throw new RuntimeException('Record id is required.');
+$transportDrops = (int) ($argv[3] ?? throw new RuntimeException('Transport drops are required.'));
+$hookDrops = (int) ($argv[4] ?? throw new RuntimeException('Hook drops are required.'));
 
 $app->make(UsageIngestProcessor::class)->process('concurrent-app', '2026-10-01T12:00:00.000000+00:00', [
     'envelope_id' => $envelopeId,
@@ -20,8 +22,8 @@ $app->make(UsageIngestProcessor::class)->process('concurrent-app', '2026-10-01T1
     'sources' => [['driver' => 'laravel-ai', 'package' => 'laravel/ai', 'version' => '1.0.1']],
     'environment' => 'testing',
     'deploy' => null,
-    'dropped_transport_total' => 1,
-    'dropped_hook_total' => 2,
+    'dropped_transport_total' => $transportDrops,
+    'dropped_hook_total' => $hookDrops,
     'records' => [[
         'record_id' => $recordId,
         'source' => 'laravel-ai',

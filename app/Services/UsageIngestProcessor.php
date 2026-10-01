@@ -16,8 +16,9 @@ final class UsageIngestProcessor
      */
     public function process(string $appRef, string $receivedAt, array $envelope): void
     {
-        DB::transaction(function () use ($appRef, $receivedAt, $envelope): void {
-            $appId = $this->app($appRef, $envelope, $receivedAt);
+        $appId = $this->app($appRef, $envelope, $receivedAt);
+
+        DB::transaction(function () use ($appId, $receivedAt, $envelope): void {
             $envelopeId = (string) Str::uuid();
 
             $inserted = DB::table('assay_envelopes')->insertOrIgnore([
@@ -54,27 +55,26 @@ final class UsageIngestProcessor
     /** @param array<string, mixed> $envelope */
     private function app(string $appRef, array $envelope, string $receivedAt): string
     {
-        $candidate = (string) Str::uuid();
-
-        DB::table('assay_apps')->insertOrIgnore([
-            'id' => $candidate,
-            'app_ref' => $appRef,
-            'dropped_transport_total' => 0,
-            'dropped_hook_total' => 0,
-            'created_at' => $receivedAt,
-            'updated_at' => $receivedAt,
+        /** @var stdClass $app */
+        $app = DB::selectOne(<<<'SQL'
+            INSERT INTO assay_apps (
+                id, app_ref, dropped_transport_total, dropped_hook_total, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (app_ref) DO UPDATE SET
+                dropped_transport_total = GREATEST(assay_apps.dropped_transport_total, EXCLUDED.dropped_transport_total),
+                dropped_hook_total = GREATEST(assay_apps.dropped_hook_total, EXCLUDED.dropped_hook_total),
+                updated_at = EXCLUDED.updated_at
+            RETURNING id
+            SQL, [
+            (string) Str::uuid(),
+            $appRef,
+            (int) $envelope['dropped_transport_total'],
+            (int) $envelope['dropped_hook_total'],
+            $receivedAt,
+            $receivedAt,
         ]);
 
-        /** @var string $appId */
-        $appId = DB::table('assay_apps')->where('app_ref', $appRef)->value('id');
-
-        DB::table('assay_apps')->where('id', $appId)->update([
-            'dropped_transport_total' => DB::raw('GREATEST(dropped_transport_total, '.(int) $envelope['dropped_transport_total'].')'),
-            'dropped_hook_total' => DB::raw('GREATEST(dropped_hook_total, '.(int) $envelope['dropped_hook_total'].')'),
-            'updated_at' => $receivedAt,
-        ]);
-
-        return $appId;
+        return (string) $app->id;
     }
 
     /**
@@ -106,9 +106,9 @@ final class UsageIngestProcessor
         }
 
         $parentRunId = isset($record['parent_invocation_id'])
-            ? $this->run($appId, (string) $record['parent_invocation_id'])
+            ? $this->run($appId, (string) $record['parent_invocation_id'], $receivedAt)
             : null;
-        $runId = $this->run($appId, (string) $record['invocation_id']);
+        $runId = $this->run($appId, (string) $record['invocation_id'], $receivedAt);
         $this->updateRun($runId, $parentRunId, $receivedAt, $envelope, $record);
         $attemptId = isset($record['attempt'])
             ? $this->attempt($runId, (int) $record['attempt'], $record)
@@ -128,7 +128,7 @@ final class UsageIngestProcessor
         $this->reconcileRun($runId, CarbonImmutable::parse($receivedAt));
     }
 
-    private function run(string $appId, string $invocationId): string
+    private function run(string $appId, string $invocationId, string $receivedAt): string
     {
         $candidate = (string) Str::uuid();
 
@@ -138,6 +138,7 @@ final class UsageIngestProcessor
             'invocation_id' => $invocationId,
             'status' => 'pending',
             'checksum_mismatch' => false,
+            'earliest_received_at' => $receivedAt,
         ]);
 
         /** @var string $runId */
@@ -145,6 +146,11 @@ final class UsageIngestProcessor
             ->where('app_id', $appId)
             ->where('invocation_id', $invocationId)
             ->value('id');
+
+        DB::update(
+            'UPDATE assay_runs SET earliest_received_at = LEAST(earliest_received_at, ?) WHERE id = ?',
+            [$receivedAt, $runId],
+        );
 
         return $runId;
     }
@@ -165,9 +171,6 @@ final class UsageIngestProcessor
             'sampled' => 'sampled',
             'subject' => 'subject',
             'agent' => 'agent',
-            'outcome' => 'outcome',
-            'failure_class' => 'failure_class',
-            'finish_reason' => 'finish_reason',
             'failure_capture' => 'failure_capture',
             'replay_inputs_omitted' => 'replay_inputs_omitted',
         ]);
@@ -210,6 +213,13 @@ final class UsageIngestProcessor
         if ($record['type'] === 'run.end') {
             $values['ended_at'] = $record['at'];
             $values['ended_received_at'] = $receivedAt;
+            $values['outcome'] = $record['outcome'];
+            $values['failure_class'] = $record['failure_class'] ?? null;
+            $values['finish_reason'] = $record['finish_reason'] ?? null;
+
+            if (($record['operation'] ?? $existing->operation) !== 'agent' && array_key_exists('duration_ms', $record)) {
+                $values['duration_ms'] = $this->decimal($record['duration_ms']);
+            }
 
             if (isset($record['attempt'])) {
                 $values['terminal_attempt'] = $record['attempt'];
@@ -348,23 +358,26 @@ final class UsageIngestProcessor
         }
     }
 
-    public function reconcileStale(?CarbonImmutable $asOf = null): int
+    public function reconcileStale(?CarbonImmutable $asOf = null, ?int $limit = null): int
     {
         $asOf ??= CarbonImmutable::now();
         $minutes = max(1, (int) config('assay.stale_after_minutes', 30));
+        $limit ??= max(1, (int) config('assay.stale.batch_size', 1_000));
         $cutoff = $asOf->subMinutes($minutes)->format('Y-m-d H:i:s.uP');
-        $runIds = DB::table('assay_runs')
+        $runs = DB::table('assay_runs')
             ->whereNull('ended_at')
-            ->whereNotNull('started_received_at')
             ->whereNotIn('status', ['incomplete', 'failed_or_lost'])
-            ->where('started_received_at', '<=', $cutoff)
-            ->pluck('id');
+            ->where('earliest_received_at', '<=', $cutoff)
+            ->orderBy('earliest_received_at')
+            ->orderBy('id')
+            ->limit($limit)
+            ->get(['id', 'earliest_received_at']);
 
-        foreach ($runIds as $runId) {
-            $this->reconcileRun((string) $runId, $asOf);
+        foreach ($runs as $run) {
+            $this->reconcileRun((string) $run->id, $asOf);
         }
 
-        return $runIds->count();
+        return $runs->count();
     }
 
     private function reconcileRun(string $runId, CarbonImmutable $asOf): void
@@ -389,11 +402,11 @@ final class UsageIngestProcessor
                     $values['duration_ms'] = $this->decimal($start->diffInMicroseconds($end) / 1000);
                 }
             }
-        } elseif ($run->started_received_at !== null) {
-            $staleAt = CarbonImmutable::parse((string) $run->started_received_at)
+        } else {
+            $staleAt = CarbonImmutable::parse((string) $run->earliest_received_at)
                 ->addMinutes(max(1, (int) config('assay.stale_after_minutes', 30)));
             $values['status'] = $asOf->greaterThanOrEqualTo($staleAt)
-                ? ($run->operation === 'agent' ? 'incomplete' : 'failed_or_lost')
+                ? ($run->operation === 'agent' || $run->operation === null ? 'incomplete' : 'failed_or_lost')
                 : 'started';
         }
 
@@ -401,9 +414,7 @@ final class UsageIngestProcessor
             $values['checksum_mismatch'] = $this->checksumMismatch($runId, (int) $run->terminal_attempt);
         }
 
-        if ($values !== []) {
-            DB::table('assay_runs')->where('id', $runId)->update($values);
-        }
+        DB::table('assay_runs')->where('id', $runId)->update($values);
     }
 
     private function checksumMismatch(string $runId, int $terminalAttempt): bool
@@ -460,6 +471,6 @@ final class UsageIngestProcessor
 
     private function decimal(mixed $value): string
     {
-        return (string) $value;
+        return is_int($value) ? (string) $value : sprintf('%.17g', (float) $value);
     }
 }

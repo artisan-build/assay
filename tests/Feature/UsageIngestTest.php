@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Jobs\ProcessUsageEnvelope;
 use App\Services\UsageIngestProcessor;
+use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,12 +20,12 @@ it('stores every record type and operation from contract objects while assemblin
     $agent = 'agent-child';
     $parent = 'agent-parent';
     $records = [
-        EnvelopeFactory::record(['type' => 'run.end', 'invocation_id' => $agent, 'parent_invocation_id' => $parent, 'parent_tool_invocation_id' => 'parent-tool', 'at' => '2026-10-01T12:00:09.000000+00:00', 'outcome' => 'completed', 'usage' => ['input_tokens' => 3], 'model' => ['requested' => 'asked', 'responded' => 'answered', 'provider' => 'provider-b']]),
+        EnvelopeFactory::record(['type' => 'run.end', 'invocation_id' => $agent, 'parent_invocation_id' => $parent, 'parent_tool_invocation_id' => 'parent-tool', 'at' => '2026-10-01T12:00:09.000000+00:00', 'outcome' => 'completed', 'finish_reason' => 'stop', 'usage' => ['input_tokens' => 3], 'model' => ['requested' => 'asked', 'responded' => 'answered', 'provider' => 'provider-b']]),
         EnvelopeFactory::record(['type' => 'tool.approval', 'invocation_id' => $agent, 'step' => 0, 'tool_invocation_id' => 'tool-1', 'tool' => 'lookup', 'approval' => 'approved']),
-        EnvelopeFactory::record(['type' => 'tool.end', 'invocation_id' => $agent, 'step' => 0, 'tool_invocation_id' => 'tool-1', 'tool' => 'lookup', 'outcome' => 'completed', 'duration_ms' => 2.5]),
+        EnvelopeFactory::record(['type' => 'tool.end', 'invocation_id' => $agent, 'step' => 0, 'tool_invocation_id' => 'tool-1', 'tool' => 'lookup', 'outcome' => 'failed', 'failure_class' => LogicException::class, 'duration_ms' => 2.5]),
         EnvelopeFactory::record(['type' => 'tool.start', 'invocation_id' => $agent, 'step' => 0, 'tool_invocation_id' => 'tool-1', 'tool' => 'lookup']),
         EnvelopeFactory::record(['type' => 'step.fail', 'invocation_id' => $agent, 'step' => 1, 'failure_class' => RuntimeException::class, 'duration_ms' => 1.5]),
-        EnvelopeFactory::record(['type' => 'step.end', 'invocation_id' => $agent, 'step' => 0, 'usage' => ['input_tokens' => 3], 'duration_ms' => 4.5, 'finish_reason' => 'stop']),
+        EnvelopeFactory::record(['type' => 'step.end', 'invocation_id' => $agent, 'step' => 0, 'usage' => ['input_tokens' => 3], 'duration_ms' => 4.5, 'finish_reason' => 'length']),
         EnvelopeFactory::record(['type' => 'step.start', 'invocation_id' => $agent, 'step' => 0]),
         EnvelopeFactory::record(['type' => 'run.failover', 'invocation_id' => $agent, 'model' => ['provider' => 'provider-a', 'requested' => 'asked'], 'failure_class' => RuntimeException::class]),
         EnvelopeFactory::record(['type' => 'run.start', 'invocation_id' => $agent, 'parent_invocation_id' => $parent, 'parent_tool_invocation_id' => 'parent-tool', 'agent' => 'App\\Ai\\ChildAgent', 'model' => ['provider' => 'late-provider', 'requested' => 'late-requested']]),
@@ -95,6 +96,10 @@ it('stores every record type and operation from contract objects while assemblin
         ->and($child->requested_model)->toBe('asked')
         ->and($child->responded_model)->toBe('answered')
         ->and($child->provider)->toBe('provider-b')
+        ->and($child->outcome)->toBe('completed')
+        ->and($child->status)->toBe('completed')
+        ->and($child->failure_class)->toBeNull()
+        ->and($child->finish_reason)->toBe('stop')
         ->and($transcription->duration_ms)->toBe('1234.000')
         ->and($metadata->capture)->toBe('full')
         ->and($metadata->sampled)->toBeFalse()
@@ -102,7 +107,11 @@ it('stores every record type and operation from contract objects while assemblin
         ->and($metadata->failure_capture)->toBe('truncated')
         ->and(json_decode($metadata->replay_inputs_omitted, true, flags: JSON_THROW_ON_ERROR))->toBe(['attachments', 'provider_options'])
         ->and(DB::table('assay_steps')->count())->toBe(3)
+        ->and(DB::table('assay_steps')->where('event', 'fail')->value('failure_class'))->toBe(RuntimeException::class)
+        ->and(DB::table('assay_steps')->where('event', 'end')->value('finish_reason'))->toBe('length')
         ->and(DB::table('assay_tool_events')->count())->toBe(3)
+        ->and(DB::table('assay_tool_events')->where('event', 'end')->value('failure_class'))->toBe(LogicException::class)
+        ->and(DB::table('assay_run_failovers')->whereNotNull('run_id')->value('failure_class'))->toBe(RuntimeException::class)
         ->and(DB::table('assay_run_failovers')->whereNull('run_id')->count())->toBe(1);
 
     $metrics = DB::table('assay_usage_metrics')
@@ -118,6 +127,98 @@ it('stores every record type and operation from contract objects while assemblin
         ->where('assay_runs.invocation_id', 'operation-reranking')
         ->where('metric', 'search_units')
         ->value('value'))->toBe('0.125');
+});
+
+it('keeps run end summaries authoritative after chronological recovery and failover', function (): void {
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record(['type' => 'run.start', 'invocation_id' => 'recovered-run']),
+        EnvelopeFactory::record(['type' => 'step.start', 'invocation_id' => 'recovered-run', 'step' => 0]),
+        EnvelopeFactory::record(['type' => 'step.fail', 'invocation_id' => 'recovered-run', 'step' => 0, 'failure_class' => RuntimeException::class]),
+        EnvelopeFactory::record(['type' => 'step.start', 'invocation_id' => 'recovered-run', 'step' => 1]),
+        EnvelopeFactory::record(['type' => 'step.end', 'invocation_id' => 'recovered-run', 'step' => 1, 'finish_reason' => 'stop', 'usage' => ['input_tokens' => 1]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'invocation_id' => 'recovered-run', 'outcome' => 'completed', 'finish_reason' => 'stop', 'usage' => ['input_tokens' => 1]]),
+        EnvelopeFactory::record(['type' => 'run.start', 'invocation_id' => 'failover-run', 'attempt' => 1]),
+        EnvelopeFactory::record(['type' => 'run.failover', 'invocation_id' => 'failover-run', 'attempt' => 1, 'model' => ['provider' => 'first', 'requested' => 'model'], 'failure_class' => LogicException::class]),
+        EnvelopeFactory::record(['type' => 'run.start', 'invocation_id' => 'failover-run', 'attempt' => 2]),
+        EnvelopeFactory::record(['type' => 'step.end', 'invocation_id' => 'failover-run', 'attempt' => 2, 'step' => 0, 'finish_reason' => 'stop', 'usage' => ['input_tokens' => 1]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'invocation_id' => 'failover-run', 'attempt' => 2, 'outcome' => 'completed', 'finish_reason' => 'stop', 'usage' => ['input_tokens' => 1]]),
+    ]));
+
+    foreach (['recovered-run', 'failover-run'] as $invocationId) {
+        $run = DB::table('assay_runs')->where('invocation_id', $invocationId)->sole();
+
+        expect($run->outcome)->toBe('completed')
+            ->and($run->status)->toBe('completed')
+            ->and($run->failure_class)->toBeNull()
+            ->and($run->finish_reason)->toBe('stop');
+    }
+});
+
+it('preserves round trip decimal fidelity and checksum comparisons near the precision boundary', function (): void {
+    $envelope = EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'reranking',
+            'invocation_id' => 'precise-metric',
+            'attempt' => null,
+            'outcome' => 'completed',
+            'usage' => ['search_units' => 0.12345678901234566],
+        ]),
+        EnvelopeFactory::record(['type' => 'step.end', 'invocation_id' => 'precise-checksum', 'step' => 0, 'usage' => ['input_tokens' => 1]]),
+        EnvelopeFactory::record(['type' => 'run.end', 'invocation_id' => 'precise-checksum', 'outcome' => 'completed', 'usage' => ['input_tokens' => 1]]),
+    ]);
+    processEnvelope(EnvelopeCodec::decode(EnvelopeCodec::encode($envelope)));
+
+    $metric = DB::table('assay_usage_metrics')
+        ->join('assay_runs', 'assay_runs.id', '=', 'assay_usage_metrics.run_id')
+        ->where('assay_runs.invocation_id', 'precise-metric')
+        ->value('value');
+    $checksumRunId = DB::table('assay_runs')->where('invocation_id', 'precise-checksum')->value('id');
+    DB::table('assay_usage_metrics')->where('run_id', $checksumRunId)->where('source', 'agent_step')->update([
+        'value' => '0.12345678901234566',
+    ]);
+    DB::table('assay_usage_metrics')->where('run_id', $checksumRunId)->where('source', 'agent_checksum')->update([
+        'value' => '0.12345678901234565',
+    ]);
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record(['type' => 'tool.start', 'invocation_id' => 'precise-checksum', 'step' => 1, 'tool_invocation_id' => 'precision-tool']),
+    ]));
+
+    expect($metric)->toBe('0.12345678901234566')
+        ->and((bool) DB::table('assay_runs')->where('invocation_id', 'precise-checksum')->value('checksum_mismatch'))->toBeTrue();
+});
+
+it('uses client non-agent duration only when matching start time is unavailable', function (): void {
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'image',
+            'invocation_id' => 'end-only-duration',
+            'attempt' => null,
+            'outcome' => 'completed',
+            'duration_ms' => 12.345,
+            'usage' => ['image_output_tokens' => 1],
+        ]),
+        EnvelopeFactory::record([
+            'operation' => 'embeddings',
+            'invocation_id' => 'derived-duration',
+            'attempt' => null,
+            'at' => '2026-10-01T12:00:00.000000+00:00',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'operation' => 'embeddings',
+            'invocation_id' => 'derived-duration',
+            'attempt' => null,
+            'at' => '2026-10-01T12:00:01.500000+00:00',
+            'outcome' => 'completed',
+            'duration_ms' => 999.0,
+            'usage' => ['input_tokens' => 1],
+        ]),
+    ]));
+
+    expect(DB::table('assay_runs')->where('invocation_id', 'end-only-duration')->value('duration_ms'))->toBe('12.345')
+        ->and(DB::table('assay_runs')->where('invocation_id', 'derived-duration')->value('duration_ms'))->toBe('1500.000');
 });
 
 it('keeps envelope and record replay idempotent and drop totals as independent maxima', function (): void {

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Jobs\ProcessUsageEnvelope;
-use ArtisanBuild\AssayContracts\EnvelopeCodec;
 use ArtisanBuild\AssayContracts\EnvelopeV1;
 use ArtisanBuild\AssayContracts\InvalidEnvelope;
 use ArtisanBuild\BuiltForCloud\AppPurposeRegistry;
@@ -31,32 +30,62 @@ final class IngestController extends Controller
         if ($credential === null
             || $credential->purpose !== $purposes->purpose('assay.ingest')
             || $credential->subject_type !== SubjectType::Installation
-            || $credential->ownership() !== CredentialOwnership::Installation
-            || ! $usage->recordUsage($credential)) {
+            || $credential->ownership() !== CredentialOwnership::Installation) {
             return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
-        $body = $request->getContent();
+        $maxBodyBytes = max(1, (int) config('assay.ingest.max_body_bytes', 8_388_608));
+        $contentLength = $request->headers->get('Content-Length');
+
+        if (is_string($contentLength) && ctype_digit($contentLength) && (int) $contentLength > $maxBodyBytes) {
+            return response()->json(['error' => 'payload_too_large', 'limit_bytes' => $maxBodyBytes], 413);
+        }
+
+        $stream = $request->getContent(true);
+        $body = stream_get_contents($stream, $maxBodyBytes + 1);
+
+        if ($body === false || strlen($body) > $maxBodyBytes) {
+            return response()->json(['error' => 'payload_too_large', 'limit_bytes' => $maxBodyBytes], 413);
+        }
 
         try {
-            $peek = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             return response()->json(['message' => 'Envelope JSON is malformed.'], 422);
         }
 
-        if (is_array($peek)
-            && isset($peek['envelope_version'])
-            && is_int($peek['envelope_version'])
-            && $peek['envelope_version'] > EnvelopeV1::VERSION) {
+        if (is_array($decoded)
+            && isset($decoded['envelope_version'])
+            && is_int($decoded['envelope_version'])
+            && $decoded['envelope_version'] > EnvelopeV1::VERSION) {
             return response()->json([
-                'message' => 'Envelope v'.$peek['envelope_version'].' is newer than this Assay server (max v'.EnvelopeV1::VERSION.'). Upgrade your Assay server.',
+                'message' => 'Envelope v'.$decoded['envelope_version'].' is newer than this Assay server (max v'.EnvelopeV1::VERSION.'). Upgrade your Assay server.',
             ], 422);
         }
 
         try {
-            $envelope = EnvelopeCodec::decode($body);
+            $envelope = is_array($decoded) ? EnvelopeV1::fromArray($decoded) : null;
         } catch (InvalidEnvelope) {
             return response()->json(['message' => 'Envelope is invalid.'], 422);
+        }
+
+        if ($envelope === null) {
+            return response()->json(['message' => 'Envelope is invalid.'], 422);
+        }
+
+        $maxRecords = max(1, (int) config('assay.ingest.max_records', 500));
+        $maxSources = max(1, (int) config('assay.ingest.max_sources', 16));
+
+        if (count($envelope->records) > $maxRecords) {
+            return response()->json(['error' => 'too_many_records', 'limit' => $maxRecords], 413);
+        }
+
+        if (count($envelope->sources) > $maxSources) {
+            return response()->json(['error' => 'too_many_sources', 'limit' => $maxSources], 413);
+        }
+
+        if (! $usage->recordUsage($credential)) {
+            return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
         $job = ProcessUsageEnvelope::fromContract(
