@@ -872,7 +872,7 @@ it('inherits one tree decision through both approval events and then prunes life
 
 it('uses the official fake gateway guard and leaves no lifecycle state after success', function (): void {
     config()->set('assay.capture', 'full');
-    $events = app(Illuminate\Contracts\Events\Dispatcher::class);
+    $events = resolve(Illuminate\Contracts\Events\Dispatcher::class);
     expect($events)->toBeInstanceOf(Dispatcher::class);
     assert($events instanceof Dispatcher);
     laravelAiProvider($events, 'official-fake');

@@ -468,12 +468,10 @@ final class BufferedRecorder implements Recorder, TreeLifecycleRecorder
 
     private function retainRoot(string $root, string $invocationId): void
     {
-        if (! isset($this->retainedRoots[$root])) {
-            $this->retainedRoots[$root] = [
-                'terminal_at' => $this->now(),
-                'invocations' => [],
-            ];
-        }
+        $this->retainedRoots[$root] ??= [
+            'terminal_at' => $this->now(),
+            'invocations' => [],
+        ];
 
         $this->retainedRoots[$root]['invocations'][$invocationId] = true;
         $this->enforceRetainedBounds();
