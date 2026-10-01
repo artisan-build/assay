@@ -97,7 +97,7 @@ it('round-trips a canonical envelope and usage-bearing record', function (): voi
             subject: 'user:123',
             usage: $usage,
             model: new Model(requested: 'requested-model', responded: 'responded-model', provider: 'provider-name'),
-            content: new Content(['messages' => [['role' => 'user', 'body' => 'test-created body']]]),
+            content: new Content(['output_text' => 'test-created output']),
             agent: 'App\\Ai\\SupportAgent',
             durationMs: 812.4,
             finishReason: FinishReason::Stop,
@@ -116,7 +116,7 @@ it('round-trips a canonical envelope and usage-bearing record', function (): voi
         ->and($wire['records'][0]['record_id'])->toBe((string) $recordId)
         ->and($wire['records'][0]['usage'])->toBe($usage->toArray())
         ->and($wire['records'][0]['duration_ms'])->toBe(812.4)
-        ->and($wire['records'][0]['content']['messages'][0]['body'])->toBe('test-created body')
+        ->and($wire['records'][0]['content']['output_text'])->toBe('test-created output')
         ->and($wire)->not->toHaveKey('app_id');
 });
 
@@ -228,15 +228,17 @@ it('ignores additive fields at every defined object layer', function (): void {
         ->and($wire['records'][0]['model'])->toBe(['requested' => 'model-a']);
 });
 
-it('preserves product-defined content object and list shapes', function (): void {
+it('preserves product-defined nested object and list shapes', function (): void {
     $json = json_encode(validEnvelopePayload([
-        'records' => [validRecordPayload(['capture' => 'full'])],
+        'records' => [validRecordPayload(['type' => 'step.end', 'step' => 0, 'capture' => 'full'])],
     ]), JSON_THROW_ON_ERROR);
     $payload = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
     $payload->records[0]->content = (object) [
-        'empty_object' => (object) [],
-        'empty_list' => [],
-        'nested' => (object) ['body' => 'test-created content'],
+        'structured_output' => (object) [
+            'empty_object' => (object) [],
+            'empty_list' => [],
+            'nested' => (object) ['body' => 'test-created content'],
+        ],
     ];
     $contentJson = json_encode($payload->records[0]->content, JSON_THROW_ON_ERROR);
 
@@ -245,38 +247,32 @@ it('preserves product-defined content object and list shapes', function (): void
     expect(json_encode($roundTripped->records[0]->content, JSON_THROW_ON_ERROR))->toBe($contentJson);
 });
 
-it('encodes and decodes constructed empty content as an object', function (): void {
-    $envelope = new EnvelopeV1(
-        envelopeId: UuidV7::generate(),
-        sentAt: new Timestamp('2026-09-30T12:34:56.123456Z'),
-        client: new Client('artisan-build/assay-client', '1.2.3'),
-        sources: [new Source('laravel-ai', 'laravel/ai', '1.0.0')],
-        environment: 'testing',
-        droppedTransportTotal: 0,
-        droppedHookTotal: 0,
-        records: [new RecordV1(
-            recordId: UuidV7::generate(),
-            source: 'laravel-ai',
-            type: RecordType::RunEnd,
-            operation: Operation::Agent,
-            at: new Timestamp('2026-09-30T12:34:57.123456Z'),
-            capture: CaptureMode::Full,
-            sampled: true,
-            invocationId: 'run-1',
-            attempt: 1,
-            content: new Content([]),
-            outcome: Outcome::Completed,
-        )],
-    );
+it('rejects constructed and decoded empty content', function (): void {
+    expect(fn (): RecordV1 => new RecordV1(
+        recordId: UuidV7::generate(),
+        source: 'laravel-ai',
+        type: RecordType::RunEnd,
+        operation: Operation::Agent,
+        at: new Timestamp('2026-09-30T12:34:57.123456Z'),
+        capture: CaptureMode::Full,
+        sampled: true,
+        invocationId: 'run-1',
+        attempt: 1,
+        content: new Content([]),
+        outcome: Outcome::Completed,
+    ))->toThrow(InvalidEnvelope::class);
 
-    $json = EnvelopeCodec::encode($envelope);
-    $wire = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
-    $roundTripped = json_decode(EnvelopeCodec::encode(EnvelopeCodec::decode($json)), false, 512, JSON_THROW_ON_ERROR);
+    $payload = json_decode(json_encode(validEnvelopePayload([
+        'records' => [validRecordPayload([
+            'type' => 'run.end',
+            'outcome' => 'completed',
+            'capture' => 'full',
+        ])],
+    ]), JSON_THROW_ON_ERROR), false, 512, JSON_THROW_ON_ERROR);
+    $payload->records[0]->content = new stdClass;
 
-    expect($wire->records[0]->content)->toBeInstanceOf(stdClass::class)
-        ->and(get_object_vars($wire->records[0]->content))->toBe([])
-        ->and($roundTripped->records[0]->content)->toBeInstanceOf(stdClass::class)
-        ->and(get_object_vars($roundTripped->records[0]->content))->toBe([]);
+    expect(fn (): EnvelopeV1 => EnvelopeCodec::decode(json_encode($payload, JSON_THROW_ON_ERROR)))
+        ->toThrow(InvalidEnvelope::class);
 });
 
 it('rejects constructed empty usage and model objects', function (): void {
