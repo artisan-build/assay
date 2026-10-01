@@ -24,8 +24,31 @@ final class ProcessUsageEnvelope implements ShouldBeEncrypted, ShouldQueue
         public readonly array $envelope,
     ) {}
 
-    public static function fromContract(string $appRef, string $receivedAt, EnvelopeV1 $envelope): self
-    {
+    /** @param list<array{index: int, record_id: string}> $rejectedContentAttaches */
+    public static function fromContract(
+        string $appRef,
+        string $receivedAt,
+        EnvelopeV1 $envelope,
+        array $rejectedContentAttaches = [],
+    ): self {
+        $records = array_map(static function (RecordV1 $record): array {
+            $data = $record->toArray();
+
+            if ($record->content !== null) {
+                $data['content'] = $record->content->toJson();
+            }
+
+            return $data;
+        }, $envelope->records);
+
+        foreach ($rejectedContentAttaches as $rejected) {
+            array_splice($records, $rejected['index'], 0, [[
+                'record_id' => $rejected['record_id'],
+                'type' => 'content.attach',
+                'rejection' => 'metadata_smuggling',
+            ]]);
+        }
+
         return new self($appRef, $receivedAt, [
             'envelope_id' => (string) $envelope->envelopeId,
             'sent_at' => (string) $envelope->sentAt,
@@ -35,15 +58,7 @@ final class ProcessUsageEnvelope implements ShouldBeEncrypted, ShouldQueue
             'deploy' => $envelope->deploy,
             'dropped_transport_total' => $envelope->droppedTransportTotal,
             'dropped_hook_total' => $envelope->droppedHookTotal,
-            'records' => array_map(static function (RecordV1 $record): array {
-                $data = $record->toArray();
-
-                if ($record->content !== null) {
-                    $data['content'] = $record->content->toJson();
-                }
-
-                return $data;
-            }, $envelope->records),
+            'records' => $records,
         ]);
     }
 

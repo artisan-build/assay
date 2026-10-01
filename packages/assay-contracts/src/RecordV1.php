@@ -16,12 +16,12 @@ final readonly class RecordV1
     /** @param list<ReplayInputOmission>|null $replayInputsOmitted */
     public function __construct(
         public UuidV7 $recordId,
-        public string $source,
+        public ?string $source,
         public RecordType $type,
         public ?Operation $operation,
         public Timestamp $at,
         public CaptureMode $capture,
-        public bool $sampled,
+        public ?bool $sampled,
         public ?string $invocationId = null,
         public ?int $attempt = null,
         public ?string $parentInvocationId = null,
@@ -41,6 +41,7 @@ final readonly class RecordV1
         public ?string $failureClass = null,
         public ?FailureCapture $failureCapture = null,
         ?array $replayInputsOmitted = null,
+        public ?UuidV7 $targetRecordId = null,
     ) {
         if (is_int($durationMs)) {
             throw new InvalidEnvelope('Record duration_ms must be a float.');
@@ -65,19 +66,26 @@ final readonly class RecordV1
             throw new InvalidEnvelope('Record content requires full capture.');
         }
 
-        $this->validateShape();
-        $this->validateMetadata();
-        $this->content?->validateFor($this->type, $this->operation, $this->outcome);
+        $this->validate();
     }
 
     /** @param array<string, mixed> $data */
     public static function fromArray(array $data): self
     {
         $type = RecordType::tryFrom(Shape::string($data, 'type', 'record'));
+
+        if ($type === null) {
+            throw new InvalidEnvelope('Record type or capture mode is unsupported.');
+        }
+
+        if ($type === RecordType::ContentAttach) {
+            return self::contentAttachFromArray($data);
+        }
+
         $operation = self::operation($data);
         $capture = CaptureMode::tryFrom(Shape::string($data, 'capture', 'record'));
 
-        if ($type === null || $capture === null) {
+        if ($capture === null) {
             throw new InvalidEnvelope('Record type or capture mode is unsupported.');
         }
 
@@ -114,14 +122,13 @@ final readonly class RecordV1
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        $this->validateShape();
-        $this->validateMetadata();
-        $this->content?->validateFor($this->type, $this->operation, $this->outcome);
+        $this->validate();
 
         return array_filter([
             'record_id' => (string) $this->recordId,
             'source' => $this->source,
             'type' => $this->type->value,
+            'target_record_id' => $this->targetRecordId === null ? null : (string) $this->targetRecordId,
             'operation' => $this->operation?->value,
             'invocation_id' => $this->invocationId,
             'attempt' => $this->attempt,
@@ -241,6 +248,20 @@ final readonly class RecordV1
 
     private function validateShape(): void
     {
+        if ($this->type === RecordType::ContentAttach) {
+            $this->validateContentAttachShape();
+
+            return;
+        }
+
+        if ($this->source === null || $this->sampled === null) {
+            throw new InvalidEnvelope('Record source and sampled are required.');
+        }
+
+        if ($this->targetRecordId !== null) {
+            throw new InvalidEnvelope('Record target_record_id is allowed only on content.attach.');
+        }
+
         $unattributedFailover = $this->type === RecordType::RunFailover && $this->invocationId === null;
 
         if ($unattributedFailover) {
@@ -293,6 +314,85 @@ final readonly class RecordV1
         if ($this->step !== null || $this->toolInvocationId !== null) {
             throw new InvalidEnvelope('Run records must omit step and tool_invocation_id.');
         }
+    }
+
+    private function validate(): void
+    {
+        $this->validateShape();
+        $this->validateMetadata();
+
+        if ($this->type !== RecordType::ContentAttach) {
+            $this->content?->validateFor($this->type, $this->operation, $this->outcome);
+        }
+    }
+
+    private function validateContentAttachShape(): void
+    {
+        if ($this->targetRecordId === null
+            || $this->invocationId === null
+            || $this->invocationId === ''
+            || $this->capture !== CaptureMode::Full
+            || $this->content === null) {
+            throw new InvalidEnvelope('content.attach requires target_record_id, invocation_id, full capture, and content.');
+        }
+
+        if ($this->source !== null
+            || $this->operation !== null
+            || $this->sampled !== null
+            || $this->attempt !== null
+            || $this->parentInvocationId !== null
+            || $this->parentToolInvocationId !== null
+            || $this->step !== null
+            || $this->toolInvocationId !== null
+            || $this->subject !== null
+            || $this->usage !== null
+            || $this->model !== null
+            || $this->agent !== null
+            || $this->tool !== null
+            || $this->durationMs !== null
+            || $this->finishReason !== null
+            || $this->outcome !== null
+            || $this->approval !== null
+            || $this->failureClass !== null
+            || $this->failureCapture !== null
+            || $this->replayInputsOmitted !== null) {
+            throw new InvalidEnvelope('content.attach contains forbidden record metadata.');
+        }
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function contentAttachFromArray(array $data): self
+    {
+        $allowed = ['record_id', 'type', 'target_record_id', 'invocation_id', 'at', 'capture', 'content'];
+
+        if (array_diff(array_keys($data), $allowed) !== []) {
+            throw new InvalidEnvelope('content.attach contains forbidden record metadata.');
+        }
+
+        foreach ($allowed as $field) {
+            if (! array_key_exists($field, $data)) {
+                throw new InvalidEnvelope("content.attach {$field} is required.");
+            }
+        }
+
+        $capture = CaptureMode::tryFrom(Shape::string($data, 'capture', 'record'));
+
+        if ($capture !== CaptureMode::Full) {
+            throw new InvalidEnvelope('content.attach capture must be full.');
+        }
+
+        return new self(
+            recordId: new UuidV7(Shape::string($data, 'record_id', 'record')),
+            source: null,
+            type: RecordType::ContentAttach,
+            operation: null,
+            at: new Timestamp(Shape::string($data, 'at', 'record')),
+            capture: $capture,
+            sampled: null,
+            invocationId: Shape::string($data, 'invocation_id', 'record'),
+            content: Content::fromValue($data['content']),
+            targetRecordId: new UuidV7(Shape::string($data, 'target_record_id', 'record')),
+        );
     }
 
     private static function metadataString(string $value, string $field): void

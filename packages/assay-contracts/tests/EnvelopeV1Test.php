@@ -121,6 +121,25 @@ it('round-trips a canonical envelope and usage-bearing record', function (): voi
 });
 
 it('round-trips every record type', function (RecordType $type): void {
+    if ($type === RecordType::ContentAttach) {
+        $decoded = decodePayload(validEnvelopePayload([
+            'records' => [[
+                'record_id' => (string) UuidV7::generate(),
+                'type' => $type->value,
+                'target_record_id' => (string) UuidV7::generate(),
+                'invocation_id' => 'run-1',
+                'at' => '2026-09-30T12:34:56.123456Z',
+                'capture' => CaptureMode::Full->value,
+                'content' => ['output_text' => 'post-hook'],
+            ]],
+        ]));
+
+        expect($decoded->records[0]->type)->toBe($type)
+            ->and($decoded->records[0]->operation)->toBeNull();
+
+        return;
+    }
+
     $metadata = match ($type) {
         RecordType::RunEnd => ['outcome' => Outcome::Completed->value],
         RecordType::StepStart, RecordType::StepEnd, RecordType::StepFail => ['step' => 0],

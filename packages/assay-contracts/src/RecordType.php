@@ -15,4 +15,5 @@ enum RecordType: string
     case ToolStart = 'tool.start';
     case ToolEnd = 'tool.end';
     case ToolApproval = 'tool.approval';
+    case ContentAttach = 'content.attach';
 }

@@ -13,4 +13,7 @@ return [
     'stale' => [
         'batch_size' => (int) env('ASSAY_STALE_BATCH_SIZE', 1_000),
     ],
+    'content_attach' => [
+        'batch_size' => (int) env('ASSAY_CONTENT_ATTACH_BATCH_SIZE', 1_000),
+    ],
 ];

@@ -52,4 +52,22 @@ final class EnvelopeFactory
 
         return RecordV1::fromArray(array_filter($data, static fn (mixed $value): bool => $value !== null));
     }
+
+    /** @param array<string, mixed> $content */
+    public static function attach(
+        string $targetRecordId,
+        string $invocationId,
+        array $content,
+        array $overrides = [],
+    ): RecordV1 {
+        return RecordV1::fromArray(array_replace([
+            'record_id' => (string) UuidV7::generate(),
+            'type' => 'content.attach',
+            'target_record_id' => $targetRecordId,
+            'invocation_id' => $invocationId,
+            'at' => '2026-10-01T12:01:00.000000+00:00',
+            'capture' => 'full',
+            'content' => $content,
+        ], $overrides));
+    }
 }

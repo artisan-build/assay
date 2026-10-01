@@ -13,6 +13,8 @@ use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
 use Illuminate\Http\Request;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +65,109 @@ it('accepts only an active installation-owned ingest credential and derives app 
             && $job->envelope['records'][0]['content'] === '{"instructions":"ALLOWED-CONTENT"}';
     });
     expect($credential->credential->refresh()->last_used_at)->not->toBeNull();
+});
+
+it('uses credential-derived app identity when authorizing content attach targets', function (): void {
+    $targetCredential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'target-credential-app',
+    ]);
+    $attackerCredential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'attacker-credential-app',
+    ]);
+    $targetId = (string) UuidV7::generate();
+    $target = EnvelopeFactory::envelope([
+        EnvelopeFactory::record(['record_id' => $targetId, 'invocation_id' => 'credential-target']),
+    ]);
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $targetCredential->bearerHeader(),
+    ], EnvelopeCodec::encode($target))->assertAccepted();
+
+    $attachBody = json_decode(EnvelopeCodec::encode(EnvelopeFactory::envelope([
+        EnvelopeFactory::attach($targetId, 'credential-target', ['instructions' => 'CROSS-CREDENTIAL-CANARY']),
+    ])), true, flags: JSON_THROW_ON_ERROR);
+    $attachBody['app_id'] = 'target-credential-app';
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $attackerCredential->bearerHeader(),
+    ], json_encode($attachBody, JSON_THROW_ON_ERROR))->assertAccepted();
+
+    $receipt = DB::table('assay_content_attach_receipts')
+        ->join('assay_apps', 'assay_apps.id', '=', 'assay_content_attach_receipts.app_id')
+        ->sole();
+
+    expect($receipt->app_ref)->toBe('attacker-credential-app')
+        ->and($receipt->reason)->toBe('cross_app')
+        ->and(DB::table('assay_record_content')->count())->toBe(0)
+        ->and(json_encode(DB::table('assay_runs')->get(), JSON_THROW_ON_ERROR))->not->toContain('CROSS-CREDENTIAL-CANARY');
+});
+
+it('isolates a metadata-smuggled attach without exposing its content or rolling back valid siblings', function (): void {
+    config()->set('assay.queue', 'database');
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'smuggled-attach-app',
+    ]);
+    $canary = 'SMUGGLED-ATTACH-CONTENT-CANARY';
+    $attachId = (string) UuidV7::generate();
+    $validId = (string) UuidV7::generate();
+    $body = json_decode(EnvelopeCodec::encode(EnvelopeFactory::envelope([
+        EnvelopeFactory::attach(
+            (string) UuidV7::generate(),
+            'smuggled-attach-run',
+            ['instructions' => $canary],
+            ['record_id' => $attachId],
+        ),
+        EnvelopeFactory::record([
+            'record_id' => $validId,
+            'invocation_id' => 'smuggled-attach-run',
+        ]),
+    ])), true, flags: JSON_THROW_ON_ERROR);
+    $body['records'][0]['source'] = 'forbidden';
+    $logs = [];
+    Log::listen(static function (MessageLogged $event) use (&$logs): void {
+        $logs[] = $event->message;
+        $logs[] = json_encode($event->context, JSON_THROW_ON_ERROR);
+    });
+
+    $this->call('POST', '/ingest', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => $credential->bearerHeader(),
+    ], json_encode($body, JSON_THROW_ON_ERROR))->assertAccepted();
+
+    $payload = (string) DB::table('jobs')->sole()->payload;
+    expect($payload)->not->toContain($canary);
+
+    Artisan::call('queue:work', [
+        'connection' => 'database',
+        '--once' => true,
+        '--tries' => 1,
+    ]);
+
+    $receipt = DB::table('assay_content_attach_receipts')->sole();
+    $durableSurfaces = json_encode([
+        DB::table('assay_content_attach_receipts')->get(),
+        DB::table('assay_pending_content_attaches')->get(),
+        DB::table('assay_record_content')->get(),
+        DB::table('assay_messages')->get(),
+        DB::table('failed_jobs')->get(),
+    ], JSON_THROW_ON_ERROR);
+
+    expect($receipt->record_id)->toBe($attachId)
+        ->and($receipt->reason)->toBe('metadata_smuggling')
+        ->and(DB::table('assay_records')->count())->toBe(1)
+        ->and(DB::table('assay_records')->sole()->record_id)->toBe($validId)
+        ->and(DB::table('assay_records')->where('record_id', $attachId)->exists())->toBeFalse()
+        ->and(DB::table('assay_runs')->where('invocation_id', 'smuggled-attach-run')->exists())->toBeTrue()
+        ->and(DB::table('failed_jobs')->count())->toBe(0)
+        ->and($durableSurfaces)->not->toContain($canary)
+        ->and(implode("\n", $logs))->not->toContain($canary);
 });
 
 it('creates no session row or cookie for anonymous or authenticated machine requests', function (): void {

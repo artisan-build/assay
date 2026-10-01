@@ -12,6 +12,17 @@ final class EnvelopeCodec
 {
     private const JSON_FLAGS = JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES;
 
+    /** @var list<string> */
+    private const CONTENT_ATTACH_FIELDS = [
+        'record_id',
+        'type',
+        'target_record_id',
+        'invocation_id',
+        'at',
+        'capture',
+        'content',
+    ];
+
     public static function encode(EnvelopeV1 $envelope): string
     {
         return json_encode($envelope->toArray(), self::JSON_FLAGS);
@@ -19,6 +30,29 @@ final class EnvelopeCodec
 
     /** @param (callable(array<string, mixed>): void)|null $inspect */
     public static function decode(string $json, ?callable $inspect = null): EnvelopeV1
+    {
+        return EnvelopeV1::fromArray(self::decodeData($json, $inspect));
+    }
+
+    /**
+     * @param  (callable(array<string, mixed>): void)|null  $inspect
+     * @param  callable(int, string): void  $rejectSmuggledContentAttach
+     */
+    public static function decodeForIngest(
+        string $json,
+        callable $rejectSmuggledContentAttach,
+        ?callable $inspect = null,
+    ): EnvelopeV1 {
+        $data = self::decodeData($json, $inspect);
+
+        return EnvelopeV1::fromArray(self::isolateSmuggledContentAttaches($data, $rejectSmuggledContentAttach));
+    }
+
+    /**
+     * @param  (callable(array<string, mixed>): void)|null  $inspect
+     * @return array<string, mixed>
+     */
+    private static function decodeData(string $json, ?callable $inspect): array
     {
         try {
             $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
@@ -32,7 +66,45 @@ final class EnvelopeCodec
             $inspect($data);
         }
 
-        return EnvelopeV1::fromArray(self::normalizeContentStrings($data));
+        return self::normalizeContentStrings($data);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  callable(int, string): void  $reject
+     * @return array<string, mixed>
+     */
+    private static function isolateSmuggledContentAttaches(array $data, callable $reject): array
+    {
+        if (! is_array($data['records'] ?? null)) {
+            return $data;
+        }
+
+        $records = $data['records'];
+        $allowed = array_fill_keys(self::CONTENT_ATTACH_FIELDS, true);
+
+        foreach ($records as $index => $record) {
+            $record = $record instanceof stdClass ? get_object_vars($record) : $record;
+
+            if (! is_array($record)
+                || ($record['type'] ?? null) !== RecordType::ContentAttach->value
+                || array_diff_key($record, $allowed) === []) {
+                continue;
+            }
+
+            try {
+                $attach = RecordV1::fromArray(array_intersect_key($record, $allowed));
+            } catch (InvalidEnvelope) {
+                continue;
+            }
+
+            $reject($index, (string) $attach->recordId);
+            unset($records[$index]);
+        }
+
+        $data['records'] = array_values($records);
+
+        return $data;
     }
 
     /**
