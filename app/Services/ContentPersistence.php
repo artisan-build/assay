@@ -11,9 +11,9 @@ use PDOException;
 use RuntimeException;
 use stdClass;
 
-final class ContentPersistence
+final readonly class ContentPersistence
 {
-    public function __construct(private readonly ContentStoreRegistry $stores) {}
+    public function __construct(private ContentStoreRegistry $stores) {}
 
     /** @param array<string, mixed> $record */
     public function persist(string $recordId, string $runId, string $sourceRecordId, array $record): void

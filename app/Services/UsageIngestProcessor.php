@@ -10,11 +10,11 @@ use Illuminate\Support\Str;
 use RuntimeException;
 use stdClass;
 
-final class UsageIngestProcessor
+final readonly class UsageIngestProcessor
 {
     public function __construct(
-        private readonly ContentPersistence $contentPersistence,
-        private readonly ContentAttachAdmission $contentAttaches,
+        private ContentPersistence $contentPersistence,
+        private ContentAttachAdmission $contentAttaches,
     ) {}
 
     /**

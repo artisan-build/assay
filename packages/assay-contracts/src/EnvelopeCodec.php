@@ -13,7 +13,7 @@ final class EnvelopeCodec
     private const JSON_FLAGS = JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES;
 
     /** @var list<string> */
-    private const CONTENT_ATTACH_FIELDS = [
+    private const array CONTENT_ATTACH_FIELDS = [
         'record_id',
         'type',
         'target_record_id',
