@@ -10,6 +10,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Sleep;
 use Symfony\Component\Process\Process;
 
 function ingestDescendantAttachTarget(): array
@@ -232,7 +233,7 @@ it('serializes erasure first against a subjectless descendant attach', function 
     );
     $attach = descendantAttachProcess($target['target_id'], 'ERASURE-FIRST-DESCENDANT-CONTENT');
     $attach->start();
-    usleep(300_000);
+    Sleep::usleep(300_000);
 
     expect($attach->isRunning())->toBeTrue('The descendant attach did not wait for the erasure subject lock.');
 
@@ -265,7 +266,7 @@ it('serializes a subjectless descendant attach first and erasure removes its con
         '2026-10-01T12:01:00.000000+00:00',
     ]);
     $erasure->start();
-    usleep(300_000);
+    Sleep::usleep(300_000);
 
     expect($erasure->isRunning())->toBeTrue('Erasure did not wait for the descendant attach subject lock.');
 
