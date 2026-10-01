@@ -50,6 +50,14 @@ these limits with `ASSAY_INGEST_MAX_BODY_BYTES`, `ASSAY_INGEST_MAX_RECORDS`, and
 `ASSAY_INGEST_MAX_SOURCES`. A client `batch_size` configured above the server's record limit is
 unsupported.
 
+## Dataset Export
+
+Curated dataset items default to 365 days of retention from item addition. Set
+`ASSAY_DATASET_RETENTION_DAYS` to a positive number of days or `none` for an operator-wide no-expiry
+default; each dataset records its own retention choice. The versioned on-demand JSONL schema, replay
+fidelity rule, principal binding, and erasure behavior are documented in
+[`docs/dataset-export-v1.md`](docs/dataset-export-v1.md).
+
 ## Quality Gate
 
 `composer ready` is the hard gate. It regenerates IDE helpers, runs Rector and Pint, performs root

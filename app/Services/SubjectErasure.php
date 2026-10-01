@@ -164,10 +164,19 @@ final readonly class SubjectErasure
     {
         $runIds = $this->runIds($appId, $subjects);
         $deleted = 0;
+        $datasetItemsDeleted = 0;
 
         foreach ($this->stores->stores() as $store) {
+            if ($store->erasure === 'dataset') {
+                $count = $this->eraseStore($store, $appId, [], $cutoff, $subjects);
+                $deleted += $count;
+                $datasetItemsDeleted += $count;
+
+                continue;
+            }
+
             foreach (array_chunk($runIds, $this->batchSize()) as $runIdBatch) {
-                $deleted += $this->eraseStore($store, $appId, $runIdBatch, $cutoff);
+                $deleted += $this->eraseStore($store, $appId, $runIdBatch, $cutoff, $subjects);
             }
         }
 
@@ -185,7 +194,7 @@ final readonly class SubjectErasure
         return [
             'runs_affected' => $runsAffected,
             'content_rows_deleted' => $deleted,
-            'dataset_items_deleted' => 0,
+            'dataset_items_deleted' => $datasetItemsDeleted,
             'bounded_residue' => $this->stores->boundedResidueReport(),
         ];
     }
@@ -225,10 +234,13 @@ final readonly class SubjectErasure
         return $runIds;
     }
 
-    /** @param list<string> $runIds */
-    private function eraseStore(ContentStore $store, string $appId, array $runIds, CarbonImmutable $cutoff): int
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $subjects
+     */
+    private function eraseStore(ContentStore $store, string $appId, array $runIds, CarbonImmutable $cutoff, array $subjects): int
     {
-        if ($runIds === [] || $store->erasure === 'bounded_residue') {
+        if (($runIds === [] && $store->erasure !== 'dataset') || $store->erasure === 'bounded_residue') {
             return 0;
         }
 
@@ -252,6 +264,15 @@ final readonly class SubjectErasure
                             ->where('record.occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'));
                     })
                     ->orderBy('message.id')->limit($this->batchSize())->pluck('message.id'),
+                'run_flag' => DB::table($store->table.' as flag')
+                    ->join('assay_runs as run', 'run.id', '=', 'flag.run_id')
+                    ->whereIn('flag.run_id', $runIds)
+                    ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
+                    ->orderBy('flag.run_id')->limit($this->batchSize())->pluck('flag.run_id'),
+                'dataset' => DB::table($store->table)->where('app_id', $appId)
+                    ->whereIn('subject_tombstone', array_filter($subjects, static fn (string $subject): bool => str_starts_with($subject, 'deleted:')))
+                    ->where('source_occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
+                    ->orderBy('id')->limit($this->batchSize())->pluck('id'),
                 'pending_target' => DB::table($store->table.' as pending')
                     ->where('pending.app_id', $appId)
                     ->where('pending.occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
@@ -281,7 +302,8 @@ final readonly class SubjectErasure
                     ]);
                 }
 
-                $count = DB::table($store->table)->whereIn('id', $ids)->delete();
+                $key = $store->erasure === 'run_flag' ? 'run_id' : 'id';
+                $count = DB::table($store->table)->whereIn($key, $ids)->delete();
                 $deleted += $count;
             }
         } while ($ids->isNotEmpty());

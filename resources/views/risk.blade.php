@@ -31,9 +31,15 @@
     <section data-testid="risk-retention">
         <h2>Retention and erasure model</h2>
         <p>The frozen operational defaults are 30 days for run content, 395 days for usage metadata, and 365 days for curated dataset items. Curated datasets are intentional copies and can outlive the run content from which they were created.</p>
-        <p>The code-owned content-store registry drives scheduled, bounded retention across live per-record content, deduplicated messages, held attaches, and content-bearing queue residue. Delete-by-subject sweeps subject-associated stores, while queued, retried, and delayed records pass through the same barrier before writing. On-demand exports read live state, so erased content cannot reappear in a later export. Dataset retention is reserved for the curation surface.</p>
+        <p>The code-owned content-store registry drives scheduled, bounded retention across live per-record content, deduplicated messages, held attaches, flags, dataset items, and content-bearing queue residue. Delete-by-subject sweeps subject-associated stores, while queued, retried, and delayed records pass through the same barrier before writing. On-demand exports read live state, so erased content cannot reappear in a later export.</p>
         <p>Erasure replaces subjects on surviving usage metadata with versioned HMAC tombstones. Tombstones are pseudonymous, never anonymous or de-identified: usage remains correlatable without retaining the erased subject identifier. Configure a dedicated <code>ASSAY_ERASURE_KEY</code> of at least 32 random bytes; it must remain separate from <code>APP_KEY</code>. Retain every old dedicated key under its original version during rotation; a missing, malformed, or lost key fails subject-bearing ingest closed because historical subject lookup and its barrier cannot be trusted.</p>
         <p>Infrastructure backups are outside Assay's deletion guarantee. Operators must keep backup retention no longer than the content promise they make to users. After restoring a database snapshot, running <code>assay:erasures:reapply --since=&lt;snapshot-time&gt;</code> before normal use is mandatory.</p>
+    </section>
+
+    <section data-testid="risk-dataset-curation">
+        <h2>Dataset curation and export</h2>
+        <p>Dataset items are immutable curated copies and can outlive source run content. Their retention starts when each item is added, defaults to 365 days, can be configured per dataset, and supports an explicit no-expiry choice.</p>
+        <p>JSONL exports are rendered from current live rows and never stored as files. Export request URLs are not bearer capabilities: download requires the same authenticated principal, a fresh content-access decision, and a request no more than 15 minutes old. Subject erasure removes matching curated items and is reflected by every later download.</p>
     </section>
 
     <section data-testid="risk-queue-egress">

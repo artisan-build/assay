@@ -8,6 +8,10 @@ $activeErasureKey = (string) env('ASSAY_ERASURE_KEY', '');
 $erasureKeys = is_array($historicalErasureKeys)
     ? [$activeErasureVersion => $activeErasureKey] + $historicalErasureKeys
     : null;
+$datasetRetention = env('ASSAY_DATASET_RETENTION_DAYS', 365);
+$datasetRetentionDays = in_array($datasetRetention, [null, '', 'none', 'no-expiry'], true)
+    ? null
+    : (int) $datasetRetention;
 
 return [
     'queue' => [
@@ -29,7 +33,7 @@ return [
     'retention' => [
         'run_content_days' => (int) env('ASSAY_RUN_CONTENT_RETENTION_DAYS', 30),
         'usage_days' => (int) env('ASSAY_USAGE_RETENTION_DAYS', 395),
-        'dataset_days' => (int) env('ASSAY_DATASET_RETENTION_DAYS', 365),
+        'dataset_days' => $datasetRetentionDays,
         'batch_size' => (int) env('ASSAY_RETENTION_BATCH_SIZE', 1_000),
     ],
     'erasure' => [
