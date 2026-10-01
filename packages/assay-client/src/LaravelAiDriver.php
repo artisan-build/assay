@@ -95,6 +95,9 @@ final class LaravelAiDriver implements CaptureDriver
     /** @var array<string, array<string, Approval>> */
     private array $approvalDecisions = [];
 
+    /** @var array<string, int> */
+    private array $approvalEventsRemaining = [];
+
     /** @param (Closure(): DateTimeImmutable)|null $clock */
     public function __construct(private readonly Dispatcher $events, ?Closure $clock = null)
     {
@@ -214,8 +217,15 @@ final class LaravelAiDriver implements CaptureDriver
 
     private function agentCompleted(AgentPrompted $event): void
     {
-        $retainApproval = $event->response->hasPendingApprovals() || $event->prompt->approvalDecisions !== null;
-        $recorded = false;
+        $approvalEvents = (int) $event->response->hasPendingApprovals()
+            + (int) ($event->prompt->approvalDecisions !== null);
+        $retainApproval = $approvalEvents > 0;
+
+        if ($retainApproval) {
+            $this->approvalEventsRemaining[$event->invocationId] = $approvalEvents;
+        } else {
+            unset($this->approvalEventsRemaining[$event->invocationId]);
+        }
 
         try {
             if ($retainApproval && $this->recorder instanceof TreeLifecycleRecorder) {
@@ -242,11 +252,10 @@ final class LaravelAiDriver implements CaptureDriver
                 capture: $this->capture(),
                 sampled: $this->capture() === CaptureMode::Full,
             ));
-            $recorded = true;
         } finally {
-            $this->invocations->finish($event->invocationId, $recorded && $retainApproval);
+            $this->invocations->finish($event->invocationId, $retainApproval);
 
-            if (! $recorded || $event->prompt->approvalDecisions === null) {
+            if (! $retainApproval) {
                 unset($this->approvalDecisions[$event->invocationId]);
             }
         }
@@ -272,7 +281,7 @@ final class LaravelAiDriver implements CaptureDriver
             ));
         } finally {
             $this->invocations->finish($event->invocationId);
-            unset($this->approvalDecisions[$event->invocationId]);
+            unset($this->approvalDecisions[$event->invocationId], $this->approvalEventsRemaining[$event->invocationId]);
         }
     }
 
@@ -427,16 +436,20 @@ final class LaravelAiDriver implements CaptureDriver
             }
             $recorded = true;
         } finally {
-            if (! $recorded) {
-                unset($this->approvalDecisions[$event->invocationId]);
-            }
+            if (isset($this->approvalEventsRemaining[$event->invocationId])) {
+                $this->finishApprovalEvent($event->invocationId);
+            } else {
+                if (! $recorded) {
+                    unset($this->approvalDecisions[$event->invocationId]);
+                }
 
-            if (! $recorded || ! isset($this->approvalDecisions[$event->invocationId])) {
-                $this->invocations->finishApproval($event->invocationId);
-            }
+                if (! $recorded || ! isset($this->approvalDecisions[$event->invocationId])) {
+                    $this->invocations->finishApproval($event->invocationId);
+                }
 
-            if ($this->recorder instanceof TreeLifecycleRecorder) {
-                $this->recorder->releaseTreeContext($event->invocationId);
+                if ($this->recorder instanceof TreeLifecycleRecorder) {
+                    $this->recorder->releaseTreeContext($event->invocationId);
+                }
             }
         }
     }
@@ -465,12 +478,25 @@ final class LaravelAiDriver implements CaptureDriver
                 ));
             }
         } finally {
-            unset($this->approvalDecisions[$event->invocationId]);
-            $this->invocations->finishApproval($event->invocationId);
+            $this->finishApprovalEvent($event->invocationId);
+        }
+    }
 
-            if ($this->recorder instanceof TreeLifecycleRecorder) {
-                $this->recorder->releaseTreeContext($event->invocationId);
-            }
+    private function finishApprovalEvent(string $invocationId): void
+    {
+        $remaining = ($this->approvalEventsRemaining[$invocationId] ?? 1) - 1;
+
+        if ($remaining > 0) {
+            $this->approvalEventsRemaining[$invocationId] = $remaining;
+
+            return;
+        }
+
+        unset($this->approvalDecisions[$invocationId], $this->approvalEventsRemaining[$invocationId]);
+        $this->invocations->finishApproval($invocationId);
+
+        if ($this->recorder instanceof TreeLifecycleRecorder) {
+            $this->recorder->releaseTreeContext($invocationId);
         }
     }
 
