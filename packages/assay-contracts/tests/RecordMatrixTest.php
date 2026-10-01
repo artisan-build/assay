@@ -147,7 +147,7 @@ it('rejects inapplicable metrics instead of dropping them', function (Operation 
 it('round-trips failure capture and replay omission enums at their exact placement', function (): void {
     $record = matrixRoundTrip(matrixPayload([
         'type' => 'run.end',
-        'capture' => 'full',
+        'capture' => 'usage',
         'sampled' => false,
         'outcome' => 'failed',
         'failure_capture' => FailureCapture::Truncated->value,
@@ -166,7 +166,7 @@ it('rejects failure capture and replay omission outside their exact placement', 
 })->with([
     'failure capture on run start' => [['failure_capture' => 'complete']],
     'failure capture sampled' => [['type' => 'run.end', 'capture' => 'full', 'sampled' => true, 'outcome' => 'failed', 'failure_capture' => 'complete']],
-    'failure capture usage mode' => [['type' => 'run.end', 'outcome' => 'failed', 'failure_capture' => 'complete']],
+    'failure capture missing decision' => [['type' => 'run.end', 'sampled' => null, 'outcome' => 'failed', 'failure_capture' => 'complete']],
     'failure capture completed' => [['type' => 'run.end', 'capture' => 'full', 'outcome' => 'completed', 'failure_capture' => 'complete']],
     'replay omissions on run start' => [['replay_inputs_omitted' => ['attachments']]],
     'replay omissions non-agent' => fn () => array_diff_key(matrixPayload(['type' => 'run.end', 'operation' => 'image', 'outcome' => 'completed', 'replay_inputs_omitted' => ['attachments']]), ['attempt' => true]),

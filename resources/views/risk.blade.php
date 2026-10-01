@@ -16,6 +16,13 @@
         <p>The client applies your payload filter before its encrypted queued job is created. U+0000 in captured content strings is normalized to U+FFFD before delivery and again before server storage. Accepted content is then stored in this Assay installation's PostgreSQL database as per-record content and deduplicated message bodies. Assay performs no redaction, PII detection, or content classification.</p>
     </section>
 
+    <section data-testid="risk-sampling-subject">
+        <h2>Sampling, failures, and subjects</h2>
+        <p>Full capture samples once per root and applies that decision to the complete agent tree, including sub-agents and linked non-agent operations. The global sample rate defaults to 1; exact per-agent-class overrides take precedence. Usage is never sampled away.</p>
+        <p>Always-on-failure is enabled by default. Every record in an unsampled full-mode agent tree is sent immediately as usage capture without content, while post-filter content is kept only in process and bounded to 512 KiB per root by default. Oldest content is evicted first. Success discards the buffer; an agent or step failure sends retained content once through content-only <code>content.attach</code> records with fresh ids targeting the originals, without filtering it again, and reports complete or truncated status. Standalone non-agent operations are excluded because they have no failure event.</p>
+        <p>Applications may put an opaque subject in Laravel Context at <code>assay.subject</code>. The client freezes it when the root starts and propagates it to descendants. Laravel Context crosses a queued-job boundary when it is set before dispatch. An absent subject is sent as <code>unknown</code> and displays as unknown. Assay subjects are unrelated to Built for Cloud credential subjects.</p>
+    </section>
+
     <section data-testid="risk-access">
         <h2>Who can read content</h2>
         <p>Every admitted Owner, Admin, and Member can view usage. Owners always have content access, Admins receive it by role default, and Members do not. Owners can override Admin or Member access; a content-capable Admin can override Members. Returning a person to their role default removes the override.</p>

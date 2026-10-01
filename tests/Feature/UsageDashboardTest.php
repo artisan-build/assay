@@ -85,6 +85,8 @@ function seedDashboardData(): void
             'type' => 'run.start',
             'invocation_id' => 'agent-failed',
             'at' => '2026-10-01T12:01:00.000000+00:00',
+            'capture' => 'full',
+            'sampled' => false,
             'agent' => '=FormulaAgent',
             'model' => ['provider' => '=provider-a', 'requested' => 'requested-only'],
         ]),
@@ -134,8 +136,11 @@ function seedDashboardData(): void
             'type' => 'run.end',
             'invocation_id' => 'agent-failed',
             'at' => '2026-10-01T12:01:04.000000+00:00',
+            'capture' => 'full',
+            'sampled' => false,
             'outcome' => 'failed',
             'failure_class' => 'App\\Exceptions\\AgentFailure',
+            'failure_capture' => 'complete',
             'usage' => ['input_tokens' => 10],
             'model' => ['provider' => '=provider-a', 'requested' => 'requested-only'],
         ]),
@@ -278,12 +283,15 @@ it('projects discriminating PostgreSQL data across all seven dashboard tables', 
         'subject' => 'safe-subject',
         'run_count' => '1',
         'usage' => '7',
-    ])->and(collect($subjects)->pluck('subject'))->not->toContain('not_reported');
+    ])->and(collect($subjects)->pluck('subject'))->toContain('unknown')
+        ->and(collect($subjects)->pluck('subject'))->not->toContain('not_reported');
 
     $top = $this->actingAs($owner)->getJson(route('assay.dashboard.top-runs'))
         ->assertOk()->json('rows');
     expect($top[0]['invocation_id'])->toBe('agent-failed')
         ->and($top[0]['usage'])->toBe('10')
+        ->and($top[0]['subject'])->toBe('unknown')
+        ->and($top[0])->toMatchArray(['capture' => 'full', 'sampled' => 'false', 'failure_capture' => 'complete'])
         ->and($top[0])->toHaveKey('run_tree_id')
         ->and(collect($top)->pluck('invocation_id'))->not->toContain('agent-omitted');
 
