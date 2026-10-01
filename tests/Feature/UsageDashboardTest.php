@@ -496,6 +496,83 @@ it('rolls selected usage through a three-level run tree without counting agent c
     ]);
 });
 
+it('terminates cyclic usage rollups and counts each reachable run once', function (): void {
+    $owner = dashboardOwner();
+    $records = [
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'cycle-a',
+            'agent' => 'CycleAgentA',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'cycle-a',
+            'at' => '2026-10-01T15:00:01.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 1.0,
+            'usage' => ['input_tokens' => 2],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'cycle-a',
+            'at' => '2026-10-01T15:00:02.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 2],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.start',
+            'invocation_id' => 'cycle-b',
+            'at' => '2026-10-01T15:01:00.000000+00:00',
+            'agent' => 'CycleAgentB',
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'step.end',
+            'invocation_id' => 'cycle-b',
+            'at' => '2026-10-01T15:01:01.000000+00:00',
+            'step' => 0,
+            'duration_ms' => 1.0,
+            'usage' => ['input_tokens' => 3],
+        ]),
+        EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'cycle-b',
+            'at' => '2026-10-01T15:01:02.000000+00:00',
+            'outcome' => 'completed',
+            'usage' => ['input_tokens' => 3],
+        ]),
+    ];
+
+    ProcessUsageEnvelope::fromContract(
+        'cycle-app',
+        '2026-10-01T15:02:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    $runA = (string) DB::table('assay_runs')->where('invocation_id', 'cycle-a')->value('id');
+    $runB = (string) DB::table('assay_runs')->where('invocation_id', 'cycle-b')->value('id');
+    DB::table('assay_runs')->where('id', $runA)->update(['parent_run_id' => $runB]);
+    DB::table('assay_runs')->where('id', $runB)->update(['parent_run_id' => $runA]);
+
+    $topRuns = collect($this->actingAs($owner)->getJson(route('assay.dashboard.top-runs'))
+        ->assertOk()->json('rows'));
+    expect($topRuns->pluck('usage', 'invocation_id')->sortKeys()->all())->toBe([
+        'cycle-a' => '5',
+        'cycle-b' => '5',
+    ]);
+
+    $agents = collect($this->actingAs($owner)->getJson(route('assay.dashboard.usage-by-agent'))
+        ->assertOk()->json('rows'));
+    expect($agents->firstWhere('agent', 'CycleAgentA'))->toMatchArray([
+        'reported_run_count' => '1',
+        'median_usage_per_run' => '5',
+        'p95_usage_per_run' => '5',
+    ])->and($agents->firstWhere('agent', 'CycleAgentB'))->toMatchArray([
+        'reported_run_count' => '1',
+        'median_usage_per_run' => '5',
+        'p95_usage_per_run' => '5',
+    ]);
+});
+
 it('projects failed steps as provider and model attributed counts in JSON HTML and CSV', function (): void {
     $owner = dashboardOwner();
     $records = [

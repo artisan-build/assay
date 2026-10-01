@@ -95,7 +95,7 @@ final class UsageDashboard
                 SELECT id AS run_id, id AS descendant_run_id
                 FROM assay_runs
 
-                UNION ALL
+                UNION
 
                 SELECT run_descendants.run_id, child.id
                 FROM run_descendants
@@ -198,7 +198,7 @@ final class UsageDashboard
                 SELECT id AS run_id, id AS descendant_run_id
                 FROM assay_runs
 
-                UNION ALL
+                UNION
 
                 SELECT run_descendants.run_id, child.id
                 FROM run_descendants
