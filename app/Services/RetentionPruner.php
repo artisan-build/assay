@@ -44,14 +44,14 @@ final readonly class RetentionPruner
         $recordIds = DB::table('assay_records')
             ->whereNull('run_id')
             ->where('occurred_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
-            ->orderBy('occurred_at')->orderBy('id')->limit($limit)->pluck('id');
+            ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id');
         $recordsDeleted = $recordIds->isEmpty() ? 0 : DB::table('assay_records')->whereIn('id', $recordIds)->delete();
         $envelopeIds = DB::table('assay_envelopes as envelope')
             ->where('envelope.received_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
             ->whereNotExists(function ($query): void {
                 $query->selectRaw('1')->from('assay_records as record')->whereColumn('record.envelope_id', 'envelope.id');
             })
-            ->orderBy('envelope.received_at')->orderBy('envelope.id')->limit($limit)->pluck('envelope.id');
+            ->oldest('envelope.received_at')->orderBy('envelope.id')->limit($limit)->pluck('envelope.id');
         $envelopesDeleted = $envelopeIds->isEmpty() ? 0 : DB::table('assay_envelopes')->whereIn('id', $envelopeIds)->delete();
 
         return [
@@ -74,11 +74,10 @@ final readonly class RetentionPruner
                 ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
                 ->orderBy('content.id')->limit($limit)->pluck('content.id'),
             'timestamp' => DB::table($store->table)->where('occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
-                ->orderBy('occurred_at')->orderBy('id')->limit($limit)->pluck('id'),
-            'unix_timestamp' => DB::table($store->table)->where('created_at', '<=', $cutoff->timestamp)
-                ->orderBy('created_at')->orderBy('id')->limit($limit)->pluck('id'),
+                ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id'),
+            'unix_timestamp' => DB::table($store->table)->where('created_at', '<=', $cutoff->timestamp)->oldest()->orderBy('id')->limit($limit)->pluck('id'),
             'failed_timestamp' => DB::table($store->table)->where('failed_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
-                ->orderBy('failed_at')->orderBy('id')->limit($limit)->pluck('id'),
+                ->oldest('failed_at')->orderBy('id')->limit($limit)->pluck('id'),
             default => collect(),
         };
 

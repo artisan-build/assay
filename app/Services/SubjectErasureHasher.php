@@ -8,7 +8,7 @@ use RuntimeException;
 
 final class SubjectErasureHasher
 {
-    private const DOMAIN = 'assay-subject-erasure';
+    private const string DOMAIN = 'assay-subject-erasure';
 
     /** @return array{version: string, lookup_key: string, tombstone: string} */
     public function active(string $subject): array

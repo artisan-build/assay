@@ -21,6 +21,11 @@ namespace App\Models{
  * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride newModelQuery()
  * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride newQuery()
  * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride query()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride whereAccess($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride whereActorId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride whereReason($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride whereSetAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|ContentAccessOverride whereSetByActorId($value)
  * @mixin \Eloquent
  */
 	#[\AllowDynamicProperties]
