@@ -43,6 +43,13 @@ composer dev
 Assay is nodeless by design. Do not add Node, npm, Vite, or a frontend build step. Static assets are
 committed under `public/build`.
 
+## Ingest Limits
+
+The server admits envelopes up to 8 MiB, 500 records, and 16 sources by default. Deployments may tune
+these limits with `ASSAY_INGEST_MAX_BODY_BYTES`, `ASSAY_INGEST_MAX_RECORDS`, and
+`ASSAY_INGEST_MAX_SOURCES`. A client `batch_size` configured above the server's record limit is
+unsupported.
+
 ## Quality Gate
 
 `composer ready` is the hard gate. It regenerates IDE helpers, runs Rector and Pint, performs root
