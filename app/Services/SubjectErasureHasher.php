@@ -106,11 +106,15 @@ final class SubjectErasureHasher
             if (str_starts_with($key, 'base64:')) {
                 $decoded = base64_decode(substr($key, 7), true);
 
-                if ($decoded === false || $decoded === '') {
+                if ($decoded === false) {
                     throw new RuntimeException('An erasure key is not valid base64.');
                 }
 
                 $key = $decoded;
+            }
+
+            if (strlen($key) < 32) {
+                throw new RuntimeException('Erasure keys must contain at least 32 bytes.');
             }
 
             $keys[$version] = $key;

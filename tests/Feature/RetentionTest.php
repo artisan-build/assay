@@ -62,7 +62,7 @@ it('honors exact content and usage boundaries while preserving recent usage tota
         ->and(DB::table('assay_runs')->where('invocation_id', 'usage-newer')->exists())->toBeTrue();
 });
 
-it('prunes production database queue and failed-job residue in bounded repeatable batches', function (): void {
+it('drains every eligible store to the retention boundary in bounded batches per scheduled invocation', function (): void {
     $asOf = CarbonImmutable::parse('2026-10-01T12:00:00.000000+00:00');
     $old = $asOf->subDays(30)->timestamp;
     $new = $asOf->subDays(30)->addSecond()->timestamp;
@@ -78,11 +78,13 @@ it('prunes production database queue and failed-job residue in bounded repeatabl
     ]);
 
     config()->set('queue.default', 'database');
-    $first = resolve(RetentionPruner::class)->prune($asOf, 1);
-    $second = resolve(RetentionPruner::class)->prune($asOf, 10);
+    $status = Artisan::call('assay:retention:prune', [
+        '--as-of' => $asOf->format('Y-m-d\TH:i:s.uP'),
+        '--limit' => '1',
+    ]);
 
-    expect($first['content_rows_deleted'])->toBe(2)
-        ->and($second['content_rows_deleted'])->toBe(1)
+    expect($status)->toBe(Command::SUCCESS)
+        ->and(Artisan::output())->toContain('3 content rows')
         ->and(DB::table('jobs')->pluck('payload')->all())->toBe(['NEW-JOB'])
         ->and(DB::table('failed_jobs')->pluck('payload')->all())->toBe(['NEW-FAILED'])
         ->and(config('queue.connections.database.table'))->toBe('jobs')
@@ -94,7 +96,7 @@ it('expires usage metadata without weakening erasure records or the object journ
     config()->set('assay.erasure.journal_disk', 'retention-journal');
     config()->set('assay.erasure.journal_prefix', 'journal');
     config()->set('assay.erasure.active_key_version', 'v1');
-    config()->set('assay.erasure.keys', ['v1' => 'retention-erasure-key']);
+    config()->set('assay.erasure.keys', ['v1' => 'retention-erasure-key-32-bytes!!']);
     ingestRetentionRun('expired-erased-run', '2025-09-01T12:00:00.000000+00:00', 'EXPIRED-ERASED-CONTENT');
     DB::table('assay_runs')->where('invocation_id', 'expired-erased-run')->update(['subject' => 'expired-erased-subject']);
     $appId = (string) DB::table('assay_apps')->where('app_ref', 'retention-app')->value('id');

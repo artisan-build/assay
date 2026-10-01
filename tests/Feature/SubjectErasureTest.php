@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Jobs\ProcessUsageEnvelope;
+use App\Services\ErasureJournal;
 use App\Services\SubjectErasure;
 use App\Services\SubjectErasureHasher;
 use App\Services\UsageIngestProcessor;
@@ -10,6 +11,7 @@ use ArtisanBuild\AssayContracts\RecordV1;
 use ArtisanBuild\AssayContracts\UuidV7;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Queue\Failed\FailedJobProviderInterface;
 use Illuminate\Support\Facades\Artisan;
@@ -18,6 +20,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use League\Flysystem\Filesystem;
+use Symfony\Component\Process\Process;
+use Tests\Support\CountingFilesystemAdapter;
 use Tests\Support\EnvelopeFactory;
 
 function ingestErasureRecords(
@@ -51,7 +56,7 @@ beforeEach(function (): void {
     config()->set('assay.erasure.journal_disk', 'erasure-journal');
     config()->set('assay.erasure.journal_prefix', 'journal');
     config()->set('assay.erasure.active_key_version', 'v1');
-    config()->set('assay.erasure.keys', ['v1' => 'ERASURE-KEY-CANARY']);
+    config()->set('assay.erasure.keys', ['v1' => 'ERASURE-KEY-CANARY-32-BYTES-LONG']);
     config()->set('assay.erasure.batch_size', 2);
 });
 
@@ -108,8 +113,8 @@ it('erases app-scoped content and held attaches, tombstones metadata, and journa
         ->and(DB::table('assay_runs')->where('app_id', $appId)->value('subject'))->toBe($tombstone)
         ->and(DB::table('assay_runs')->where('subject', $subject)->count())->toBe(1)
         ->and(json_encode(DB::table('assay_record_content')->get(), JSON_THROW_ON_ERROR))->toContain('OTHER-APP-CONTENT')
-        ->and($database)->not->toContain($subject, 'ERASURE-KEY-CANARY')
-        ->and($journal)->not->toContain($subject, 'ERASURE-KEY-CANARY', 'RECORD-CONTENT-CANARY', 'MESSAGE-CONTENT-CANARY', 'HELD-CONTENT-CANARY');
+        ->and($database)->not->toContain($subject, 'ERASURE-KEY-CANARY-32-BYTES-LONG')
+        ->and($journal)->not->toContain($subject, 'ERASURE-KEY-CANARY-32-BYTES-LONG', 'RECORD-CONTENT-CANARY', 'MESSAGE-CONTENT-CANARY', 'HELD-CONTENT-CANARY');
 });
 
 it('enforces pre-cutoff barriers record by record through run associations and content attach', function (): void {
@@ -240,8 +245,8 @@ it('rejects late encrypted queue replay without exposing subject content or key 
 
     expect(DB::table('assay_records')->where('record_id', $job->envelope['records'][0]['record_id'])->exists())->toBeFalse()
         ->and(DB::table('assay_record_content')->count())->toBe(0)
-        ->and($durableQueueSurfaces)->not->toContain($subject, $content, 'ERASURE-KEY-CANARY')
-        ->and(implode("\n", $logs))->not->toContain($subject, $content, 'ERASURE-KEY-CANARY');
+        ->and($durableQueueSurfaces)->not->toContain($subject, $content, 'ERASURE-KEY-CANARY-32-BYTES-LONG')
+        ->and(implode("\n", $logs))->not->toContain($subject, $content, 'ERASURE-KEY-CANARY-32-BYTES-LONG');
 });
 
 it('retains historical keys for lookup and repeat erasure without changing old tombstones', function (): void {
@@ -252,7 +257,10 @@ it('retains historical keys for lookup and repeat erasure without changing old t
     $oldTombstone = (string) DB::table('assay_erasure_records')->value('tombstone');
 
     config()->set('assay.erasure.active_key_version', 'v2');
-    config()->set('assay.erasure.keys', ['v2' => 'ROTATED-KEY-CANARY', 'v1' => 'ERASURE-KEY-CANARY']);
+    config()->set('assay.erasure.keys', [
+        'v2' => 'ROTATED-KEY-CANARY-32-BYTES-LONG',
+        'v1' => 'ERASURE-KEY-CANARY-32-BYTES-LONG',
+    ]);
     ingestErasureRecords([
         EnvelopeFactory::record([
             'invocation_id' => 'rotation-run',
@@ -273,7 +281,7 @@ it('retains historical keys for lookup and repeat erasure without changing old t
 
 it('uses the frozen HMAC domain and isolates the same subject between apps', function (): void {
     $subject = 'same-subject';
-    $expected = hash_hmac('sha256', "assay-subject-erasure\0".$subject, 'ERASURE-KEY-CANARY');
+    $expected = hash_hmac('sha256', "assay-subject-erasure\0".$subject, 'ERASURE-KEY-CANARY-32-BYTES-LONG');
     $identity = resolve(SubjectErasureHasher::class)->active($subject);
 
     expect($identity)->toBe(['version' => 'v1', 'lookup_key' => $expected, 'tombstone' => 'deleted:'.$expected]);
@@ -285,6 +293,112 @@ it('uses the frozen HMAC domain and isolates the same subject between apps', fun
 
     expect(DB::table('assay_runs')->where('app_id', $appA)->value('subject'))->toStartWith('deleted:')
         ->and(DB::table('assay_runs')->join('assay_apps', 'assay_apps.id', '=', 'assay_runs.app_id')->where('assay_apps.app_ref', 'app-b')->value('subject'))->toBe($subject);
+});
+
+it('fails closed before admitting subject content when the dedicated key is unusable', function (mixed $keys): void {
+    config()->set('assay.erasure.keys', $keys);
+
+    expect(fn () => ingestErasureRecords([
+        EnvelopeFactory::record([
+            'invocation_id' => 'invalid-key-run',
+            'subject' => 'invalid-key-subject',
+            'capture' => 'full',
+            'content' => ['instructions' => 'INVALID-KEY-CONTENT'],
+        ]),
+    ]))->toThrow(RuntimeException::class)
+        ->and(DB::table('assay_apps')->count())->toBe(0)
+        ->and(DB::table('assay_record_content')->count())->toBe(0);
+})->with([
+    'missing' => [null],
+    'empty map' => [[]],
+    'empty active key' => [['v1' => '']],
+    'malformed base64' => [['v1' => 'base64:not-valid-base64']],
+    'unusable short key' => [['v1' => 'too-short']],
+]);
+
+it('keeps erasure digests stable across ordinary app key rotation', function (): void {
+    $subject = 'app-key-rotation-subject';
+    config()->set('app.key', 'base64:QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=');
+    $before = resolve(SubjectErasureHasher::class)->active($subject);
+
+    config()->set('app.key', 'base64:QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=');
+    $after = resolve(SubjectErasureHasher::class)->active($subject);
+
+    expect($after)->toBe($before);
+});
+
+it('does not derive the dedicated erasure key from app key configuration', function (): void {
+    $script = <<<'PHP'
+require $argv[1];
+$config = require $argv[2];
+echo json_encode($config['erasure']['keys'], JSON_THROW_ON_ERROR);
+PHP;
+    $autoload = base_path('vendor/autoload.php');
+    $config = config_path('assay.php');
+    $first = new Process([PHP_BINARY, '-r', $script, $autoload, $config], env: [
+        'APP_KEY' => 'base64:QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=',
+        'ASSAY_ERASURE_KEY' => '',
+        'ASSAY_ERASURE_HISTORICAL_KEYS' => '{}',
+    ]);
+    $second = new Process([PHP_BINARY, '-r', $script, $autoload, $config], env: [
+        'APP_KEY' => 'base64:QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=',
+        'ASSAY_ERASURE_KEY' => '',
+        'ASSAY_ERASURE_HISTORICAL_KEYS' => '{}',
+    ]);
+
+    $first->mustRun();
+    $second->mustRun();
+
+    expect($first->getOutput())->toBe('{"v1":""}')
+        ->and($second->getOutput())->toBe($first->getOutput());
+});
+
+it('bounds journal enumeration and object reads while resuming deterministically', function (): void {
+    Storage::fake('counted-erasure-journal');
+    $base = Storage::disk('counted-erasure-journal');
+    $counting = new CountingFilesystemAdapter($base->getAdapter());
+    $disk = new FilesystemAdapter(new Filesystem($counting), $counting);
+    Storage::set('counted-erasure-journal', $disk);
+    config()->set('assay.erasure.journal_disk', 'counted-erasure-journal');
+    config()->set('assay.erasure.journal_prefix', 'journal');
+    $journal = resolve(ErasureJournal::class);
+
+    foreach (range(1, 5) as $index) {
+        $lookup = hash('sha256', 'bounded-journal-'.$index);
+        $journal->append([
+            'schema' => 1,
+            'entry_id' => sprintf('00000000-0000-7000-8000-%012d', $index),
+            'erasure_id' => sprintf('10000000-0000-7000-8000-%012d', $index),
+            'app_id' => 'bounded-journal-app',
+            'key_version' => 'v1',
+            'lookup_key' => $lookup,
+            'tombstone' => 'deleted:'.$lookup,
+            'cutoff_at' => '2026-10-01T12:00:00.000000+00:00',
+            'recorded_at' => sprintf('2026-10-01T12:00:00.%06d+00:00', $index),
+        ]);
+    }
+
+    $counting->resetCounts();
+    $first = $journal->newerThan(CarbonImmutable::parse('2026-10-01T00:00:00+00:00'), 2);
+
+    expect($counting->reads)->toBe(2)
+        ->and($counting->usedDeepListing)->toBeFalse()
+        ->and($counting->listCalls)->toBeLessThanOrEqual(180)
+        ->and($first['items'])->toHaveCount(2)
+        ->and($first['has_more'])->toBeTrue();
+
+    $counting->resetCounts();
+    $second = $journal->newerThan(
+        CarbonImmutable::parse('2026-10-01T00:00:00+00:00'),
+        2,
+        $first['next_cursor'],
+    );
+
+    expect($counting->reads)->toBe(2)
+        ->and($counting->usedDeepListing)->toBeFalse()
+        ->and($counting->listCalls)->toBeLessThanOrEqual(180)
+        ->and($second['items'])->toHaveCount(2)
+        ->and($second['items'][0]['cursor'])->not->toBe($first['items'][0]['cursor'], $first['items'][1]['cursor']);
 });
 
 it('replays journal entries after restore idempotently and contains corrupt entries value-free', function (): void {
@@ -321,17 +435,37 @@ it('replays journal entries after restore idempotently and contains corrupt entr
         ->and(DB::table('assay_record_content')->count())->toBe(1)
         ->and(Artisan::call('assay:erasures:reapply', ['--since' => '', '--limit' => '0']))->toBe(Command::INVALID);
 
-    Storage::disk('erasure-journal')->put('journal/corrupt.json', '{RESTORE-CORRUPT-CANARY');
+    $beforeCorrupt = Storage::disk('erasure-journal')->allFiles('journal');
+    $corruptLookup = hash('sha256', 'RESTORE-CORRUPT-CANARY');
+    resolve(ErasureJournal::class)->append([
+        'schema' => 1,
+        'entry_id' => (string) Str::uuid(),
+        'erasure_id' => (string) Str::uuid(),
+        'app_id' => $appId,
+        'key_version' => 'v1',
+        'lookup_key' => $corruptLookup,
+        'tombstone' => 'deleted:'.$corruptLookup,
+        'cutoff_at' => '2026-10-01T12:05:00.000000+00:00',
+        'recorded_at' => '2026-10-01T12:06:00.000000+00:00',
+    ]);
+    $corruptPath = collect(Storage::disk('erasure-journal')->allFiles('journal'))->diff($beforeCorrupt)->sole();
+    Storage::disk('erasure-journal')->put($corruptPath, '{RESTORE-CORRUPT-CANARY');
 
     $first = Artisan::call('assay:erasures:reapply', ['--since' => '2026-10-01T00:00:00+00:00', '--limit' => '10']);
     $firstOutput = Artisan::output();
-    $second = Artisan::call('assay:erasures:reapply', ['--since' => '2026-10-01T00:00:00+00:00', '--limit' => '10']);
+    preg_match('/--cursor=([a-f0-9-]+)/', $firstOutput, $cursorMatch);
+    $second = Artisan::call('assay:erasures:reapply', [
+        '--since' => '2026-10-01T00:00:00+00:00',
+        '--limit' => '10',
+        '--cursor' => $cursorMatch[1] ?? '',
+    ]);
 
     expect($first)->toBe(Command::FAILURE)
-        ->and($firstOutput)->toContain('1 journal entries reapplied', '1 entries contained')
+        ->and($firstOutput)->toContain('1 journal entries reapplied', '1 invalid entries contained')
         ->not->toContain($subject, $content, 'RESTORE-CORRUPT-CANARY')
         ->and(DB::table('assay_record_content')->count())->toBe(0)
         ->and(DB::table('assay_runs')->value('subject'))->toStartWith('deleted:')
-        ->and($second)->toBe(Command::FAILURE)
-        ->and(Artisan::output())->toContain('0 runs affected', '0 content rows');
+        ->and($cursorMatch)->toHaveCount(2)
+        ->and($second)->toBe(Command::SUCCESS)
+        ->and(Artisan::output())->toContain('0 journal entries reapplied', '0 runs affected', '0 content rows');
 });

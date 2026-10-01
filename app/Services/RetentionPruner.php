@@ -34,25 +34,48 @@ final readonly class RetentionPruner
             $contentDeleted += $this->pruneStore($store, $contentCutoff, $limit);
         }
 
-        $runIds = DB::table('assay_runs')
-            ->whereRaw('COALESCE(ended_at, started_at, earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
-            ->orderByRaw('COALESCE(ended_at, started_at, earliest_received_at)')
-            ->orderBy('id')
-            ->limit($limit)
-            ->pluck('id');
-        $runsDeleted = $runIds->isEmpty() ? 0 : DB::table('assay_runs')->whereIn('id', $runIds)->delete();
-        $recordIds = DB::table('assay_records')
-            ->whereNull('run_id')
-            ->where('occurred_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
-            ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id');
-        $recordsDeleted = $recordIds->isEmpty() ? 0 : DB::table('assay_records')->whereIn('id', $recordIds)->delete();
-        $envelopeIds = DB::table('assay_envelopes as envelope')
-            ->where('envelope.received_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
-            ->whereNotExists(function ($query): void {
-                $query->selectRaw('1')->from('assay_records as record')->whereColumn('record.envelope_id', 'envelope.id');
-            })
-            ->oldest('envelope.received_at')->orderBy('envelope.id')->limit($limit)->pluck('envelope.id');
-        $envelopesDeleted = $envelopeIds->isEmpty() ? 0 : DB::table('assay_envelopes')->whereIn('id', $envelopeIds)->delete();
+        $runsDeleted = 0;
+
+        do {
+            $runIds = DB::table('assay_runs')
+                ->whereRaw('COALESCE(ended_at, started_at, earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
+                ->orderByRaw('COALESCE(ended_at, started_at, earliest_received_at)')
+                ->orderBy('id')
+                ->limit($limit)
+                ->pluck('id');
+
+            if ($runIds->isNotEmpty()) {
+                $runsDeleted += DB::table('assay_runs')->whereIn('id', $runIds)->delete();
+            }
+        } while ($runIds->isNotEmpty());
+
+        $recordsDeleted = 0;
+
+        do {
+            $recordIds = DB::table('assay_records')
+                ->whereNull('run_id')
+                ->where('occurred_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
+                ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id');
+
+            if ($recordIds->isNotEmpty()) {
+                $recordsDeleted += DB::table('assay_records')->whereIn('id', $recordIds)->delete();
+            }
+        } while ($recordIds->isNotEmpty());
+
+        $envelopesDeleted = 0;
+
+        do {
+            $envelopeIds = DB::table('assay_envelopes as envelope')
+                ->where('envelope.received_at', '<=', $usageCutoff->format('Y-m-d H:i:s.uP'))
+                ->whereNotExists(function ($query): void {
+                    $query->selectRaw('1')->from('assay_records as record')->whereColumn('record.envelope_id', 'envelope.id');
+                })
+                ->oldest('envelope.received_at')->orderBy('envelope.id')->limit($limit)->pluck('envelope.id');
+
+            if ($envelopeIds->isNotEmpty()) {
+                $envelopesDeleted += DB::table('assay_envelopes')->whereIn('id', $envelopeIds)->delete();
+            }
+        } while ($envelopeIds->isNotEmpty());
 
         return [
             'content_rows_deleted' => $contentDeleted,
@@ -64,24 +87,32 @@ final readonly class RetentionPruner
 
     private function pruneStore(ContentStore $store, CarbonImmutable $cutoff, int $limit): int
     {
-        $ids = match ($store->retention) {
-            'run_record' => DB::table($store->table.' as content')
-                ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
-                ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
-                ->orderBy('content.id')->limit($limit)->pluck('content.id'),
-            'run_message' => DB::table($store->table.' as content')
-                ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
-                ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
-                ->orderBy('content.id')->limit($limit)->pluck('content.id'),
-            'timestamp' => DB::table($store->table)->where('occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
-                ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id'),
-            'unix_timestamp' => DB::table($store->table)->where('created_at', '<=', $cutoff->timestamp)->oldest()->orderBy('id')->limit($limit)->pluck('id'),
-            'failed_timestamp' => DB::table($store->table)->where('failed_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
-                ->oldest('failed_at')->orderBy('id')->limit($limit)->pluck('id'),
-            default => collect(),
-        };
+        $deleted = 0;
 
-        return $ids->isEmpty() ? 0 : DB::table($store->table)->whereIn('id', $ids)->delete();
+        do {
+            $ids = match ($store->retention) {
+                'run_record' => DB::table($store->table.' as content')
+                    ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
+                    ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
+                    ->orderBy('content.id')->limit($limit)->pluck('content.id'),
+                'run_message' => DB::table($store->table.' as content')
+                    ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
+                    ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
+                    ->orderBy('content.id')->limit($limit)->pluck('content.id'),
+                'timestamp' => DB::table($store->table)->where('occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
+                    ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id'),
+                'unix_timestamp' => DB::table($store->table)->where('created_at', '<=', $cutoff->timestamp)->oldest()->orderBy('id')->limit($limit)->pluck('id'),
+                'failed_timestamp' => DB::table($store->table)->where('failed_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
+                    ->oldest('failed_at')->orderBy('id')->limit($limit)->pluck('id'),
+                default => collect(),
+            };
+
+            if ($ids->isNotEmpty()) {
+                $deleted += DB::table($store->table)->whereIn('id', $ids)->delete();
+            }
+        } while ($ids->isNotEmpty());
+
+        return $deleted;
     }
 
     private function positiveConfig(string $key): int

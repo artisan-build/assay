@@ -5,7 +5,6 @@ declare(strict_types=1);
 $historicalErasureKeys = json_decode((string) env('ASSAY_ERASURE_HISTORICAL_KEYS', '{}'), true);
 $activeErasureVersion = (string) env('ASSAY_ERASURE_KEY_VERSION', 'v1');
 $activeErasureKey = (string) env('ASSAY_ERASURE_KEY', '');
-$activeErasureKey = $activeErasureKey !== '' ? $activeErasureKey : (string) env('APP_KEY');
 $erasureKeys = is_array($historicalErasureKeys)
     ? [$activeErasureVersion => $activeErasureKey] + $historicalErasureKeys
     : null;

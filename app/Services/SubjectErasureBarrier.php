@@ -29,10 +29,7 @@ final readonly class SubjectErasureBarrier
 
     public function allowsRun(string $appId, string $runId, CarbonImmutable $occurredAt): bool
     {
-        $subject = DB::table('assay_runs')
-            ->where('app_id', $appId)
-            ->where('id', $runId)
-            ->value('subject');
+        $subject = $this->effectiveSubject($appId, $runId);
 
         if (! is_string($subject) || $subject === '') {
             return true;
@@ -75,10 +72,16 @@ final readonly class SubjectErasureBarrier
                 continue;
             }
 
-            $subject = DB::table('assay_runs')
+            $runId = DB::table('assay_runs')
                 ->where('app_id', $appId)
                 ->where('invocation_id', $record[$field])
-                ->value('subject');
+                ->value('id');
+
+            if (! is_string($runId) || $runId === '') {
+                continue;
+            }
+
+            $subject = $this->effectiveSubject($appId, $runId);
 
             if (is_string($subject) && $subject !== '') {
                 return $subject;
@@ -86,6 +89,32 @@ final readonly class SubjectErasureBarrier
         }
 
         return null;
+    }
+
+    private function effectiveSubject(string $appId, string $runId): ?string
+    {
+        /** @var stdClass|null $row */
+        $row = DB::selectOne(<<<'SQL'
+            WITH RECURSIVE ancestry AS (
+                SELECT id, parent_run_id, subject, 0 AS depth, ARRAY[id] AS path
+                FROM assay_runs
+                WHERE app_id = ? AND id = ?
+                UNION ALL
+                SELECT parent.id, parent.parent_run_id, parent.subject, child.depth + 1, child.path || parent.id
+                FROM assay_runs AS parent
+                JOIN ancestry AS child ON child.parent_run_id = parent.id
+                WHERE parent.app_id = ? AND NOT parent.id = ANY(child.path)
+            )
+            SELECT subject
+            FROM ancestry
+            WHERE subject IS NOT NULL AND subject != ''
+            ORDER BY depth
+            LIMIT 1
+            SQL, [$appId, $runId, $appId]);
+
+        return $row !== null && is_string($row->subject) && $row->subject !== ''
+            ? $row->subject
+            : null;
     }
 
     private function recordQuery(string $appId, string $subject): Builder

@@ -14,6 +14,7 @@ $envelopeId = $argv[1] ?? throw new RuntimeException('Envelope id is required.')
 $attachId = $argv[2] ?? throw new RuntimeException('Attach id is required.');
 $targetId = $argv[3] ?? throw new RuntimeException('Target id is required.');
 $content = $argv[4] ?? throw new RuntimeException('Content is required.');
+$invocationId = $argv[5] ?? 'concurrent-attach-run';
 
 $app->make(UsageIngestProcessor::class)->process('concurrent-attach-app', '2026-10-01T12:01:00.000000+00:00', [
     'envelope_id' => $envelopeId,
@@ -28,7 +29,7 @@ $app->make(UsageIngestProcessor::class)->process('concurrent-attach-app', '2026-
         'record_id' => $attachId,
         'type' => 'content.attach',
         'target_record_id' => $targetId,
-        'invocation_id' => 'concurrent-attach-run',
+        'invocation_id' => $invocationId,
         'at' => '2026-10-01T12:01:00.000000+00:00',
         'capture' => 'full',
         'content' => json_encode(['instructions' => $content], JSON_THROW_ON_ERROR),

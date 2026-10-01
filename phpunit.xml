@@ -23,6 +23,7 @@
     <php>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_KEY" value="base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" force="true"/>
+        <env name="ASSAY_ERASURE_KEY" value="base64:QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=" force="true"/>
         <env name="APP_NAME" value="Assay" force="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="AUTH_GUARD" value="unsupported" force="true"/>
