@@ -49,12 +49,13 @@ final readonly class ContentAttachAdmission
         }
     }
 
-    public function applyForTarget(string $appId, string $targetRowId, string $asOf): void
+    public function applyForTarget(string $appId, string $targetRecordId, string $asOf): void
     {
         $pendingIds = DB::table($this->stores->pendingContentAttaches())
             ->where('app_id', $appId)
-            ->where('target_record_id', DB::table('assay_records')->where('id', $targetRowId)->value('record_id'))
+            ->where('target_record_id', $targetRecordId)
             ->oldest('id')
+            ->limit(max(1, (int) config('assay.content_attach.batch_size', 1_000)))
             ->pluck('id');
 
         foreach ($pendingIds as $pendingId) {

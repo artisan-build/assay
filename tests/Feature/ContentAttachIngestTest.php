@@ -8,6 +8,7 @@ use App\Services\UsageIngestProcessor;
 use ArtisanBuild\AssayContracts\RecordV1;
 use ArtisanBuild\AssayContracts\UuidV7;
 use Carbon\CarbonImmutable;
+use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\EnvelopeFactory;
@@ -107,6 +108,73 @@ it('holds an early attach, applies it when the target arrives, and expires exact
         ->and(DB::table('assay_content_attach_receipts')->where('reason', 'orphan_expired')->count())->toBe(1);
 });
 
+it('bounds expired same-target reconciliation when the target arrives at the stale boundary', function (): void {
+    config()->set('assay.stale_after_minutes', 30);
+    config()->set('assay.content_attach.batch_size', 1);
+    $targetId = (string) UuidV7::generate();
+
+    ingestAttachRecords([
+        EnvelopeFactory::attach($targetId, 'bounded-expired', ['instructions' => 'EXPIRED-FIRST']),
+        EnvelopeFactory::attach($targetId, 'bounded-expired', ['instructions' => 'EXPIRED-SECOND']),
+        EnvelopeFactory::attach($targetId, 'bounded-expired', ['instructions' => 'EXPIRED-THIRD']),
+    ]);
+    ingestAttachRecords([
+        EnvelopeFactory::record(['record_id' => $targetId, 'invocation_id' => 'bounded-expired']),
+    ], receivedAt: '2026-10-01T12:30:00.000000+00:00');
+
+    expect(DB::table('assay_pending_content_attaches')->count())->toBe(2)
+        ->and(DB::table('assay_apps')->value('dropped_content_attach_total'))->toBe(1)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'orphan_expired')->count())->toBe(1)
+        ->and(DB::table('assay_content_attach_receipts')->where('status', 'pending')->count())->toBe(2);
+
+    $admission = resolve(ContentAttachAdmission::class);
+    $first = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T12:30:00.000000+00:00'));
+    $pendingAfterFirst = DB::table('assay_pending_content_attaches')->count();
+    $second = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T12:30:00.000000+00:00'));
+
+    expect($first)->toBe(['applied' => 0, 'dropped' => 1])
+        ->and($pendingAfterFirst)->toBe(1)
+        ->and($second)->toBe(['applied' => 0, 'dropped' => 1])
+        ->and(DB::table('assay_pending_content_attaches')->count())->toBe(0)
+        ->and(DB::table('assay_apps')->value('dropped_content_attach_total'))->toBe(3)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'orphan_expired')->count())->toBe(3);
+});
+
+it('bounds unexpired same-target reconciliation without weakening first-wins behavior', function (): void {
+    config()->set('assay.stale_after_minutes', 30);
+    config()->set('assay.content_attach.batch_size', 1);
+    $targetId = (string) UuidV7::generate();
+
+    ingestAttachRecords([
+        EnvelopeFactory::attach($targetId, 'bounded-first-wins', ['instructions' => 'BOUNDED-FIRST']),
+        EnvelopeFactory::attach($targetId, 'bounded-first-wins', ['instructions' => 'BOUNDED-SECOND']),
+        EnvelopeFactory::attach($targetId, 'bounded-first-wins', ['instructions' => 'BOUNDED-THIRD']),
+    ]);
+    ingestAttachRecords([
+        EnvelopeFactory::record(['record_id' => $targetId, 'invocation_id' => 'bounded-first-wins']),
+    ], receivedAt: '2026-10-01T12:29:59.999999+00:00');
+
+    expect(DB::table('assay_pending_content_attaches')->count())->toBe(2)
+        ->and(DB::table('assay_content_attach_receipts')->where('status', 'accepted')->count())->toBe(1)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'target_has_content')->count())->toBe(0)
+        ->and((string) DB::table('assay_record_content')->sole()->content)->toContain('BOUNDED-FIRST')
+        ->not->toContain('BOUNDED-SECOND', 'BOUNDED-THIRD');
+
+    $admission = resolve(ContentAttachAdmission::class);
+    $first = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T12:29:59.999999+00:00'));
+    $pendingAfterFirst = DB::table('assay_pending_content_attaches')->count();
+    $second = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T12:29:59.999999+00:00'));
+
+    expect($first)->toBe(['applied' => 0, 'dropped' => 0])
+        ->and($pendingAfterFirst)->toBe(1)
+        ->and($second)->toBe(['applied' => 0, 'dropped' => 0])
+        ->and(DB::table('assay_pending_content_attaches')->count())->toBe(0)
+        ->and(DB::table('assay_content_attach_receipts')->where('status', 'accepted')->count())->toBe(1)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'target_has_content')->count())->toBe(2)
+        ->and((string) DB::table('assay_record_content')->sole()->content)->toContain('BOUNDED-FIRST')
+        ->not->toContain('BOUNDED-SECOND', 'BOUNDED-THIRD');
+});
+
 it('drains expired orphan attaches in bounded order and counts every drop', function (): void {
     config()->set('assay.stale_after_minutes', 30);
     config()->set('assay.content_attach.batch_size', 2);
@@ -117,24 +185,26 @@ it('drains expired orphan attaches in bounded order and counts every drop', func
         ], receivedAt: "2026-10-01T12:0{$index}:00.000000+00:00");
     }
 
-    $admission = resolve(ContentAttachAdmission::class);
-    $first = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T13:00:00.000000+00:00'));
-    $second = $admission->reconcilePending(CarbonImmutable::parse('2026-10-01T13:00:00.000000+00:00'));
-
-    expect($first)->toBe(['applied' => 0, 'dropped' => 2])
-        ->and($second)->toBe(['applied' => 0, 'dropped' => 1])
-        ->and(DB::table('assay_pending_content_attaches')->count())->toBe(0)
-        ->and(DB::table('assay_apps')->value('dropped_content_attach_total'))->toBe(3)
-        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'orphan_expired')->count())->toBe(3);
-
     CarbonImmutable::setTestNow('2026-10-01T13:00:00.000000+00:00');
 
     try {
-        expect(Artisan::call('assay:reconcile-content-attaches', ['--limit' => '2']))->toBe(0)
-            ->and(Artisan::output())->toContain('0 held attaches applied; 0 expired orphans dropped.');
+        expect(Artisan::call('assay:reconcile-content-attaches', ['--limit' => 'invalid']))->toBe(Command::INVALID)
+            ->and(Artisan::output())->toContain('The --limit option must be a positive integer.')
+            ->and(DB::table('assay_pending_content_attaches')->count())->toBe(3)
+            ->and(Artisan::call('assay:reconcile-content-attaches', ['--limit' => '2']))->toBe(Command::SUCCESS)
+            ->and(Artisan::output())->toContain('0 held attaches applied; 2 expired orphans dropped.')
+            ->and(DB::table('assay_pending_content_attaches')->count())->toBe(1);
     } finally {
         CarbonImmutable::setTestNow();
     }
+
+    $second = resolve(ContentAttachAdmission::class)
+        ->reconcilePending(CarbonImmutable::parse('2026-10-01T13:00:00.000000+00:00'));
+
+    expect($second)->toBe(['applied' => 0, 'dropped' => 1])
+        ->and(DB::table('assay_pending_content_attaches')->count())->toBe(0)
+        ->and(DB::table('assay_apps')->value('dropped_content_attach_total'))->toBe(3)
+        ->and(DB::table('assay_content_attach_receipts')->where('reason', 'orphan_expired')->count())->toBe(3);
 });
 
 it('makes replay and later distinct attaches no-ops after the first accepted content', function (): void {
@@ -154,7 +224,7 @@ it('makes replay and later distinct attaches no-ops after the first accepted con
         ->not->toContain('SECOND-CONTENT');
 });
 
-it('rejects cross-app cross-invocation contentful and invalid-target attaches without rolling back valid records', function (): void {
+it('rejects cross-app cross-invocation contentful and invalid-content attaches without rolling back valid records', function (): void {
     $crossAppTarget = (string) UuidV7::generate();
     $crossInvocationTarget = (string) UuidV7::generate();
     $contentfulTarget = (string) UuidV7::generate();

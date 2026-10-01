@@ -150,7 +150,7 @@ final readonly class UsageIngestProcessor
             $this->contentPersistence->persist($recordRowId, $runId, (string) $record['record_id'], $record);
         }
 
-        $this->contentAttaches->applyForTarget($appId, $recordRowId, $receivedAt);
+        $this->contentAttaches->applyForTarget($appId, (string) $record['record_id'], $receivedAt);
         $this->reconcileRun($runId, CarbonImmutable::parse($receivedAt));
     }
 
