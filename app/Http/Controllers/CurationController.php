@@ -62,7 +62,7 @@ final class CurationController extends Controller
 
         return $request->expectsJson()
             ? response()->json($dataset, 201)
-            : redirect()->route('assay.datasets.show', ['dataset' => $dataset['id']]);
+            : to_route('assay.datasets.show', ['dataset' => $dataset['id']]);
     }
 
     public function dataset(string $dataset): View
