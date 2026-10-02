@@ -434,6 +434,32 @@ it('bounds content decoding failures without leaking values or credential materi
     );
 });
 
+it('burns a valid confirmation before a protected erasure failure', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Mcp,
+        'subject_type' => SubjectType::ExternalConsumer,
+        'subject_ref' => 'mcp-burn-before-failure',
+        'abilities' => [AssayCredentialAbility::Content->value],
+    ]);
+    $source = seedMcp8Run('mcp-burn-app', 'mcp-burn-run', 'mcp-burn-subject', 'MCP-BURN-RAW-CANARY');
+    $arguments = ['app' => 'mcp-burn-app', 'subject' => 'mcp-burn-subject'];
+    $preview = mcp8Call('/mcp/destructive', $credential, 'delete_subject', $arguments)->assertOk();
+    $confirmation = $preview->json('result._meta.two_phase.confirmation');
+    expect($confirmation)->toBeString();
+
+    DB::table('assay_apps')->where('id', $source['app_id'])->update(['app_ref' => 'mcp-burn-app-renamed']);
+    $failed = mcp8Call('/mcp/destructive', $credential, 'delete_subject', [...$arguments, 'confirm' => $confirmation])
+        ->assertOk();
+    expect($failed->json('result.isError'))->toBeTrue()
+        ->and($failed->json('result._meta.two_phase.phase'))->toBe('executed')
+        ->and(DB::table('assay_erasure_records')->count())->toBe(0)
+        ->and(DB::table('assay_record_content')->where('run_id', $source['run_id'])->count())->toBeGreaterThan(0);
+
+    mcp8Call('/mcp/destructive', $credential, 'delete_subject', [...$arguments, 'confirm' => $confirmation], 2)
+        ->assertStatus(400)
+        ->assertJsonPath('error.message', TwoPhaseConfirmationRefused::SPENT);
+});
+
 it('runs delete subject as a single-use argument and credential-bound two-phase operation without durable secret residue', function (): void {
     $first = $this->mintCredential([
         'purpose' => CredentialPurpose::Mcp,
