@@ -19,6 +19,7 @@
         "artisan-build/built-for-cloud-contracts": "^0.4",
         "laravel/chisel": "^0.1.0",
         "laravel/framework": "^13.19",
+        "laravel/mcp": "^1.0",
         "laravel/tinker": "^3.0",
         "league/flysystem-aws-s3-v3": "^3.35",
         "livewire/flux": "^2.13.1",
