@@ -20,8 +20,10 @@ The media type is `application/x-ndjson`. Each line is one UTF-8 JSON object wit
 `content_incomplete` cannot be added.
 
 Dataset retention is counted from item addition. The operator default is 365 days, and each dataset may set a
-different positive number of days no greater than usage metadata retention (395 days by default). No-expiry is
-invalid because source run ancestry must outlive each item. Curated copies can outlive source run content.
+different positive number of days or explicitly choose no expiry. A live item pins its source run and every
+ancestor against usage pruning until the item expires or is removed. This keeps only their usage metadata, which
+erasure still pseudonymises; run messages and content blobs continue to follow ordinary content retention.
+No-expiry pins that metadata until item removal. Curated copies can outlive source run content.
 Delete-by-subject and export rendering resolve current run ancestry under the same PostgreSQL subject lock;
-the stored subject handle is used only after the source run is gone. A later download always renders the
+the stored subject handle is fallback-only for a genuinely missing source. A later download always renders the
 post-erasure live state.

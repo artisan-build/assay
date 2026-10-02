@@ -26,12 +26,6 @@ final readonly class RetentionPruner
 
         $contentDays = $this->positiveConfig('assay.retention.run_content_days');
         $usageDays = $this->positiveConfig('assay.retention.usage_days');
-        $datasetDays = config('assay.retention.dataset_days');
-
-        if (! is_int($datasetDays) || $datasetDays < 1 || $datasetDays > $usageDays) {
-            throw new RuntimeException('Dataset retention must be a positive integer no greater than usage metadata retention.');
-        }
-
         $contentCutoff = $asOf->subDays($contentDays);
         $usageCutoff = $asOf->subDays($usageDays);
         $contentDeleted = 0;
@@ -47,17 +41,43 @@ final readonly class RetentionPruner
         }
 
         $runsDeleted = 0;
+        $liveAncestryGuard = <<<'SQL'
+            NOT EXISTS (
+                WITH RECURSIVE live_ancestry AS (
+                    SELECT source.id, source.app_id, source.parent_run_id
+                    FROM assay_dataset_items AS item
+                    INNER JOIN assay_runs AS source
+                        ON source.id = item.source_run_id
+                        AND source.app_id = item.app_id
+                    WHERE item.expires_at IS NULL OR item.expires_at > ?
+                    UNION
+                    SELECT parent.id, parent.app_id, parent.parent_run_id
+                    FROM assay_runs AS parent
+                    INNER JOIN live_ancestry AS child
+                        ON child.parent_run_id = parent.id
+                        AND child.app_id = parent.app_id
+                )
+                SELECT 1
+                FROM live_ancestry AS pinned
+                WHERE pinned.id = run.id AND pinned.app_id = run.app_id
+            )
+            SQL;
+        $asOfTimestamp = $asOf->format('Y-m-d H:i:s.uP');
 
         do {
-            $runIds = DB::table('assay_runs')
-                ->whereRaw('COALESCE(ended_at, started_at, earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
-                ->orderByRaw('COALESCE(ended_at, started_at, earliest_received_at)')
-                ->orderBy('id')
+            $runIds = DB::table('assay_runs as run')
+                ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
+                ->whereRaw($liveAncestryGuard, [$asOfTimestamp])
+                ->orderByRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at)')
+                ->orderBy('run.id')
                 ->limit($limit)
-                ->pluck('id');
+                ->pluck('run.id');
 
             if ($runIds->isNotEmpty()) {
-                $runsDeleted += DB::table('assay_runs')->whereIn('id', $runIds)->delete();
+                $runsDeleted += DB::table('assay_runs as run')
+                    ->whereIn('run.id', $runIds)
+                    ->whereRaw($liveAncestryGuard, [$asOfTimestamp])
+                    ->delete();
             }
         } while ($runIds->isNotEmpty());
 

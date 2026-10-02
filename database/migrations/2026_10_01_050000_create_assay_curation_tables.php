@@ -29,7 +29,7 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->foreignUuid('dataset_id')->constrained('assay_datasets')->cascadeOnDelete();
             $table->foreignUuid('app_id')->constrained('assay_apps')->cascadeOnDelete();
-            $table->foreignUuid('source_run_id')->nullable()->constrained('assay_runs')->nullOnDelete();
+            $table->foreignUuid('source_run_id')->nullable()->constrained('assay_runs')->restrictOnDelete();
             $table->string('subject_key_version', 32)->nullable();
             $table->string('subject_tombstone', 72)->nullable();
             $table->timestampTz('source_occurred_at', 6);

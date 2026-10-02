@@ -107,23 +107,6 @@ it('validates retention limits and configuration and schedules without overlap',
     expect(Artisan::call('assay:retention:prune', ['--as-of' => '2026-10-01T12:00:00+00:00']))->toBe(Command::INVALID)
         ->and(Artisan::output())->toContain('configuration or command options are invalid');
 
-    config()->set('assay.retention.run_content_days', 30);
-    config()->set('assay.retention.dataset_days', 396);
-
-    expect(Artisan::call('assay:retention:prune', ['--as-of' => '2026-10-01T12:00:00+00:00']))->toBe(Command::INVALID)
-        ->and(Artisan::output())->toContain('configuration or command options are invalid');
-
-    config()->set('assay.retention.dataset_days', null);
-
-    expect(Artisan::call('assay:retention:prune', ['--as-of' => '2026-10-01T12:00:00+00:00']))->toBe(Command::INVALID)
-        ->and(Artisan::output())->toContain('configuration or command options are invalid');
-
-    config()->set('assay.retention.dataset_days', 395);
-
-    expect(Artisan::call('assay:retention:prune', ['--as-of' => '2026-10-01T12:00:00+00:00']))->toBe(Command::SUCCESS);
-
-    config()->set('assay.retention.dataset_days', 365);
-
     $event = collect(resolve(Schedule::class)->events())
         ->first(static fn ($event): bool => str_contains((string) $event->command, 'assay:retention:prune'));
 

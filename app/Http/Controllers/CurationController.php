@@ -51,24 +51,24 @@ final class CurationController extends Controller
 
     public function createDataset(Request $request): JsonResponse|RedirectResponse
     {
-        $usageDays = config('assay.retention.usage_days');
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'retention_mode' => ['sometimes', Rule::in(['default', 'custom'])],
+            'retention_mode' => ['sometimes', Rule::in(['default', 'custom', 'no_expiry'])],
             'retention_days' => [
                 'sometimes',
-                Rule::excludeIf($request->input('retention_mode') === 'default'),
+                'nullable',
                 Rule::requiredIf($request->input('retention_mode') === 'custom'),
+                Rule::prohibitedIf(in_array($request->input('retention_mode'), ['default', 'no_expiry'], true)),
                 'integer',
-                'min:1',
-                'max:'.(is_int($usageDays) ? $usageDays : 0),
+                'between:1,36500',
             ],
         ]);
         $retentionDays = match ($validated['retention_mode'] ?? null) {
             'default' => false,
+            'no_expiry' => null,
             'custom' => (int) $validated['retention_days'],
             default => array_key_exists('retention_days', $validated)
-                ? (int) $validated['retention_days']
+                ? ($validated['retention_days'] === null ? null : (int) $validated['retention_days'])
                 : false,
         };
 
