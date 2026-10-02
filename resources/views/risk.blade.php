@@ -46,7 +46,7 @@
         <h2>Queue and egress</h2>
         <p>The client projects source events to primitive data, applies the hook, and places only an encrypted queued job on the host queue. Client queue delivery retries are bounded to 24 hours by default; terminal failures are discarded and counted rather than retained in failed-job payloads.</p>
         <p>The Assay server also places accepted envelopes in encrypted queued jobs. The payload remains encrypted in both queued <code>jobs</code> and <code>failed_jobs</code>, which can retain erased content for at most the configured window, 72 hours by default and never longer than run-content retention. Every retry crosses the erasure barrier before a write, so queue residue cannot write erased content back into Assay. Assay prunes this bounded residue automatically, and stored failed-job exceptions contain only value-free failure details.</p>
-        <p>The forthcoming MCP surface is an additional content processor and egress path when content-scoped credentials are enabled. Its operator must account for the MCP host, model provider, and calling agent in data-processing decisions.</p>
+        <p>The MCP client is an additional processor and egress boundary. Content tools export raw customer data to that client and onward to its model provider, transcript, and logs. The default MCP credential is usage-only; content tools require a separately granted content scope. Operators must account for the MCP client, its model provider, and the calling agent in data-processing decisions.</p>
     </section>
 
     <section data-testid="risk-hook-recipes">

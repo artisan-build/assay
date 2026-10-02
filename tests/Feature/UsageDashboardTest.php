@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Jobs\ProcessUsageEnvelope;
+use App\Services\UsageDashboard;
 use App\Services\UsageIngestProcessor;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
@@ -579,6 +580,100 @@ it('terminates cyclic usage rollups and counts each reachable run once', functio
         'median_usage_per_run' => '5',
         'p95_usage_per_run' => '5',
     ]);
+});
+
+it('returns a valid deep branching metadata tree deterministically', function (): void {
+    $records = [EnvelopeFactory::record([
+        'invocation_id' => 'metadata-tree-root',
+        'at' => '2026-10-01T16:00:00.000000+00:00',
+    ])];
+    $expected = ['metadata-tree-root'];
+    $branches = [];
+
+    for ($depth = 1; $depth <= 40; $depth++) {
+        $invocation = 'metadata-tree-depth-'.$depth;
+        $records[] = EnvelopeFactory::record([
+            'invocation_id' => $invocation,
+            'parent_invocation_id' => $depth === 1 ? 'metadata-tree-root' : 'metadata-tree-depth-'.($depth - 1),
+            'at' => sprintf('2026-10-01T16:00:%02d.000000+00:00', $depth),
+        ]);
+        $expected[] = $invocation;
+
+        if ($depth % 10 === 0) {
+            $branch = 'metadata-tree-branch-'.$depth;
+            $records[] = EnvelopeFactory::record([
+                'invocation_id' => $branch,
+                'parent_invocation_id' => $invocation,
+                'at' => sprintf('2026-10-01T16:01:%02d.000000+00:00', $depth),
+            ]);
+            $branches[] = $branch;
+        }
+    }
+
+    $expected = [...$expected, ...$branches];
+
+    ProcessUsageEnvelope::fromContract(
+        'metadata-tree-app',
+        '2026-10-01T16:02:00.000000+00:00',
+        EnvelopeFactory::envelope(array_reverse($records)),
+    )->handle(resolve(UsageIngestProcessor::class));
+    $root = (string) DB::table('assay_runs')->where('invocation_id', 'metadata-tree-root')->value('id');
+    $dashboard = resolve(UsageDashboard::class);
+    $first = $dashboard->runTreeMetadata('metadata-tree-app', $root);
+    $second = $dashboard->runTreeMetadata('metadata-tree-app', $root);
+
+    expect($first)->toBe($second)
+        ->and(array_column($first['rows'], 'invocation_id'))->toBe($expected)
+        ->and(array_column($first['rows'], 'run_id'))->toHaveCount(count(array_unique(array_column($first['rows'], 'run_id'))));
+});
+
+it('keeps dashboard and CSV reliability sections complete beyond one hundred rows', function (): void {
+    $owner = dashboardOwner();
+    $records = [];
+
+    for ($agent = 0; $agent < 120; $agent++) {
+        $records[] = EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'reliability-agent-'.$agent,
+            'agent' => sprintf('ReliabilityAgent%03d', $agent),
+            'outcome' => 'completed',
+        ]);
+    }
+
+    $records[] = EnvelopeFactory::record([
+        'type' => 'run.end',
+        'operation' => 'embeddings',
+        'invocation_id' => 'reliability-non-agent',
+        'attempt' => null,
+        'outcome' => 'completed',
+        'model' => ['provider' => 'reliability-provider', 'requested' => 'reliability-model'],
+    ]);
+    $records[] = EnvelopeFactory::record([
+        'type' => 'run.failover',
+        'operation' => null,
+        'invocation_id' => null,
+        'attempt' => null,
+        'model' => ['provider' => 'reliability-provider', 'requested' => 'reliability-model'],
+    ]);
+
+    ProcessUsageEnvelope::fromContract(
+        'reliability-completeness-app',
+        '2026-10-01T16:02:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    $serviceRows = resolve(UsageDashboard::class)->reliability()->rows;
+    $jsonRows = $this->actingAs($owner)->getJson(route('assay.dashboard.reliability'))->assertOk()->json('rows');
+    $csv = $this->actingAs($owner)->get(route('assay.dashboard.reliability.csv'))->assertOk();
+    $csvRows = csvRows($csv);
+
+    foreach ([$serviceRows, $jsonRows, $csvRows] as $rows) {
+        expect($rows)->toHaveCount(123)
+            ->and(collect($rows)->pluck('measure'))->toContain(
+                'non_agent_failed_or_lost_rate',
+                'failover_rate',
+            );
+    }
 });
 
 it('projects failed steps as provider and model attributed counts in JSON HTML and CSV', function (): void {

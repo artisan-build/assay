@@ -73,6 +73,46 @@ final readonly class RunCuration
         ];
     }
 
+    /** @param list<string> $labels
+     * @return array{labels: list<string>, rating: int|string|null, note: string|null}
+     */
+    public function label(string $runId, array $labels): array
+    {
+        return DB::transaction(function () use ($runId, $labels): array {
+            $run = DB::table('assay_runs')->where('id', $runId)->lockForUpdate()->first();
+
+            if ($run === null) {
+                throw new NotFoundHttpException;
+            }
+
+            $occurredAt = CarbonImmutable::parse((string) ($run->ended_at ?? $run->started_at ?? $run->earliest_received_at));
+
+            if (! $this->barrier->allowsRun((string) $run->app_id, $runId, $occurredAt)) {
+                throw new AuthorizationException('The source run is behind an erasure barrier.');
+            }
+
+            $flag = DB::table('assay_run_flags')->where('run_id', $runId)->first();
+            $rating = is_string($flag->rating ?? null) ? $flag->rating : null;
+            $note = is_string($flag->note ?? null) ? $flag->note : null;
+            $labels = array_values(array_unique($labels));
+
+            DB::table('assay_run_flags')->upsert([[
+                'run_id' => $runId,
+                'labels' => json_encode($labels, JSON_THROW_ON_ERROR),
+                'rating' => $rating,
+                'note' => $note,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]], ['run_id'], ['labels', 'updated_at']);
+
+            return [
+                'labels' => $labels,
+                'rating' => ctype_digit((string) $rating) ? (int) $rating : $rating,
+                'note' => $note,
+            ];
+        });
+    }
+
     public function query(): Builder
     {
         return DB::table('assay_runs as run')

@@ -102,12 +102,18 @@ final readonly class DatasetManager
     }
 
     /** @return list<array{id: string, name: string, retention_days: int|null, item_count: int}> */
-    public function datasets(): array
+    public function datasets(?int $limit = null, int $offset = 0): array
     {
-        return DB::table('assay_datasets as dataset')
+        $query = DB::table('assay_datasets as dataset')
             ->leftJoin('assay_dataset_items as item', 'item.dataset_id', '=', 'dataset.id')
             ->groupBy('dataset.id')
-            ->orderBy('dataset.name')->orderBy('dataset.id')
+            ->orderBy('dataset.name')->orderBy('dataset.id');
+
+        if ($limit !== null) {
+            $query->limit(max(1, min(100, $limit)))->offset(max(0, min(10000, $offset)));
+        }
+
+        return $query
             ->get(['dataset.id', 'dataset.name', 'dataset.retention_days', DB::raw('COUNT(item.id) AS item_count')])
             ->map(static fn (stdClass $row): array => [
                 'id' => (string) $row->id,

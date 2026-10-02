@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\Data\DashboardTable;
 use App\Enums\UsageMetric;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use stdClass;
@@ -13,6 +14,53 @@ use stdClass;
 final class UsageDashboard
 {
     private const int MAXIMUM_LIMIT = 100;
+
+    /** @return list<array{group: string, metric: string, usage: string}> */
+    public function usageSummary(
+        UsageMetric $metric,
+        string $groupBy,
+        CarbonImmutable $from,
+        CarbonImmutable $to,
+        int $limit = 25,
+        int $offset = 0,
+    ): array {
+        $group = match ($groupBy) {
+            'app' => 'a.app_ref',
+            'environment' => "COALESCE(r.environment, 'not_reported')",
+            'operation' => "COALESCE(r.operation, 'not_reported')",
+            'provider' => "COALESCE(um.provider, r.provider, 'not_reported')",
+            'model' => "COALESCE(um.responded_model, um.requested_model, r.responded_model, r.requested_model, 'not_reported')",
+            'agent' => "COALESCE(r.agent, 'not_reported')",
+            'subject' => "COALESCE(r.subject, 'unknown')",
+            default => throw new RuntimeException('Unsupported usage grouping.'),
+        };
+        $limit = $this->limit($limit);
+        $offset = max(0, min(10000, $offset));
+
+        /** @var list<array{group: string, metric: string, usage: string}> */
+        return $this->rows(<<<SQL
+            SELECT
+                {$group} AS "group",
+                um.metric,
+                SUM(um.value)::text AS usage
+            FROM assay_usage_metrics um
+            INNER JOIN assay_records rec ON rec.id = um.record_id
+            INNER JOIN assay_runs r ON r.id = um.run_id
+            INNER JOIN assay_apps a ON a.id = r.app_id
+            WHERE
+                um.metric = ?
+                AND um.source IN ('agent_step', 'non_agent')
+                AND rec.occurred_at >= ?
+                AND rec.occurred_at <= ?
+            GROUP BY {$group}, um.metric
+            ORDER BY SUM(um.value) DESC, {$group}
+            LIMIT {$limit} OFFSET {$offset}
+            SQL, [
+            $metric->value,
+            $from->format('Y-m-d H:i:s.uP'),
+            $to->format('Y-m-d H:i:s.uP'),
+        ]);
+    }
 
     public function usageOverTime(
         UsageMetric $metric,
@@ -185,8 +233,10 @@ final class UsageDashboard
         UsageMetric $metric,
         bool $canViewContent,
         int $limit = 25,
+        int $offset = 0,
     ): DashboardTable {
         $limit = $this->limit($limit);
+        $offset = max(0, min(10000, $offset));
         $rows = $this->rows(<<<SQL
             WITH RECURSIVE direct_usage AS (
                 SELECT run_id, metric, SUM(value) AS usage
@@ -231,7 +281,7 @@ final class UsageDashboard
             INNER JOIN assay_runs r ON r.id = subtree_usage.run_id
             INNER JOIN assay_apps a ON a.id = r.app_id
             ORDER BY subtree_usage.usage DESC, r.id
-            LIMIT {$limit}
+            LIMIT {$limit} OFFSET {$offset}
             SQL, [$metric->value]);
 
         $headers = [
@@ -266,9 +316,9 @@ final class UsageDashboard
         );
     }
 
-    public function reliability(): DashboardTable
+    public function reliability(?int $limit = null, int $offset = 0): DashboardTable
     {
-        $rows = $this->rows(<<<'SQL'
+        $query = <<<'SQL'
             WITH agent_rates AS (
                 SELECT
                     COALESCE(agent, 'not_reported') AS dimension,
@@ -458,7 +508,15 @@ final class UsageDashboard
                 qualification
             FROM reliability_rows
             ORDER BY sort_order, dimension NULLS FIRST, provider NULLS FIRST, model NULLS FIRST
-            SQL);
+            SQL;
+        $bindings = [];
+
+        if ($limit !== null) {
+            $query .= "\nLIMIT ? OFFSET ?";
+            $bindings = [$this->limit($limit), max(0, min(10000, $offset))];
+        }
+
+        $rows = $this->rows($query, $bindings);
 
         return new DashboardTable(
             [
@@ -789,6 +847,57 @@ final class UsageDashboard
                 'failure_capture',
                 'status',
                 'failure_class',
+            ],
+            'rows' => $rows,
+        ];
+    }
+
+    /** @return array{headers: list<string>, rows: list<array<string, string>>} */
+    public function runTreeMetadata(string $app, string $runId): array
+    {
+        $rows = $this->rows(<<<'SQL'
+            WITH RECURSIVE run_tree AS (
+                SELECT run.*, ARRAY[run.id]::uuid[] AS path, 0 AS depth
+                FROM assay_runs run
+                INNER JOIN assay_apps app ON app.id = run.app_id
+                WHERE app.app_ref = ? AND run.id = ?
+
+                UNION ALL
+
+                SELECT child.*, parent.path || child.id, parent.depth + 1
+                FROM assay_runs child
+                INNER JOIN run_tree parent ON child.parent_run_id = parent.id
+                WHERE
+                    child.app_id = parent.app_id
+                    AND parent.depth < 499
+                    AND NOT child.id = ANY(parent.path)
+            )
+            SELECT
+                id AS run_id,
+                parent_run_id,
+                parent_tool_invocation_id,
+                invocation_id,
+                COALESCE(operation, 'not_reported') AS operation,
+                COALESCE(agent, 'not_reported') AS agent,
+                COALESCE(provider, 'not_reported') AS provider,
+                COALESCE(requested_model, 'not_reported') AS requested_model,
+                COALESCE(responded_model, requested_model, 'not_reported') AS responded_model,
+                COALESCE(subject, 'unknown') AS subject,
+                capture,
+                sampled,
+                failure_capture,
+                status,
+                failure_class
+            FROM run_tree
+            ORDER BY started_at NULLS LAST, id
+            LIMIT 500
+            SQL, [$app, $runId]);
+
+        return [
+            'headers' => [
+                'run_id', 'parent_run_id', 'parent_tool_invocation_id', 'invocation_id',
+                'operation', 'agent', 'provider', 'requested_model', 'responded_model',
+                'subject', 'capture', 'sampled', 'failure_capture', 'status', 'failure_class',
             ],
             'rows' => $rows,
         ];

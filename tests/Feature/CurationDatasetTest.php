@@ -287,6 +287,28 @@ it('accepts positive dataset retention independently of usage retention and vali
         ->and(DB::table('assay_datasets')->count())->toBe(4);
 });
 
+it('keeps the service and browser dataset index complete beyond one hundred rows', function (): void {
+    $owner = createPr7User('Dataset Completeness Owner', UserRole::Owner);
+    $manager = resolve(DatasetManager::class);
+
+    for ($index = 0; $index < 105; $index++) {
+        $manager->create(sprintf('Complete Dataset %03d', $index));
+    }
+
+    $datasets = $manager->datasets();
+
+    expect($datasets)->toHaveCount(105)
+        ->and(array_column($datasets, 'name'))->toBe(array_map(
+            static fn (int $index): string => sprintf('Complete Dataset %03d', $index),
+            range(0, 104),
+        ));
+
+    $this->actingAs($owner)->get(route('assay.datasets.index'))
+        ->assertOk()
+        ->assertSee('Complete Dataset 000')
+        ->assertSee('Complete Dataset 104');
+});
+
 it('exports deterministic live JSONL without storing an artifact and binds fresh downloads to the requesting principal', function (): void {
     $owner = createPr7User('Export Owner', UserRole::Owner);
     $other = createPr7User('Export Other Admin', UserRole::Admin);
