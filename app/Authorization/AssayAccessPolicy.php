@@ -9,6 +9,8 @@ use App\Models\ContentAccessOverride;
 use ArtisanBuild\BuiltForCloud\Console\ActingPrincipal;
 use ArtisanBuild\BuiltForCloud\Console\ConsoleRole;
 use ArtisanBuild\BuiltForCloud\Console\DelegatedActor;
+use ArtisanBuild\BuiltForCloud\Credential;
+use ArtisanBuild\BuiltForCloud\CredentialPurpose;
 use ArtisanBuild\BuiltForCloud\RolePolicy;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
@@ -37,6 +39,36 @@ final class AssayAccessPolicy
         return $role instanceof UserRole
             ? $this->effective($actor, $role)
             : $this->notAdmitted($actor);
+    }
+
+    public function projectCredential(Credential $credential): EffectiveAccess
+    {
+        $actor = (string) $credential->getAuthIdentifier();
+
+        if ($credential->purpose !== CredentialPurpose::Mcp) {
+            return $this->notAdmitted($actor);
+        }
+
+        $usage = $credential->hasAbility(AssayCredentialAbility::Usage->value);
+        $content = $credential->hasAbility(AssayCredentialAbility::Content->value);
+
+        if ($credential->user_id !== null) {
+            $user = User::query()->find($credential->user_id);
+            $cap = $user instanceof User
+                ? $this->project($user)
+                : $this->notAdmitted($credential->user_id);
+            $usage = $usage && $cap->usage;
+            $content = $content && $cap->content;
+        }
+
+        return new EffectiveAccess(
+            usage: $usage,
+            content: $content,
+            source: ContentAccessSource::Credential,
+            redundant: false,
+            role: null,
+            actor: $actor,
+        );
     }
 
     public function mayManageContentAccess(

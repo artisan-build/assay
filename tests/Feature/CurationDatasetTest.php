@@ -769,7 +769,6 @@ it('gates every PR7 route through central content policy and keeps usage project
     $this->withHeader('Authorization', $ingest->bearerHeader())
         ->postJson(route('assay.datasets.exports.request', $dataset['id']))->assertForbidden();
 
-    // Credential-held usage/content abilities and person-bound caps remain explicitly deferred to PR7b.
     $delegatedActor = DelegatedActor::query()->create([
         'identity_hash' => DelegatedActor::identityHash('pr7-issuer', 'pr7-operator'),
         'issuer' => 'pr7-issuer',

@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Authorization\AssayCredentialAbility;
+use ArtisanBuild\BuiltForCloud\CredentialAbilityRegistry;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -23,8 +25,13 @@ class AppServiceProvider extends ServiceProvider
     /**
      * Bootstrap any application services.
      */
-    public function boot(): void
+    public function boot(CredentialAbilityRegistry $credentialAbilities): void
     {
+        $credentialAbilities->register(
+            AssayCredentialAbility::Usage->value,
+            AssayCredentialAbility::Content->value,
+        );
+
         Route::prefix('')->group(base_path('routes/assay.php'));
 
         $this->configureDefaults();

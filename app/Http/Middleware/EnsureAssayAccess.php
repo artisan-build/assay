@@ -38,18 +38,20 @@ final readonly class EnsureAssayAccess
         if ($hasBearer) {
             $credential = $this->bearer->credential($request);
 
-            if ($credential instanceof Credential) {
-                abort(403);
+            if (! $credential instanceof Credential) {
+                abort(401);
             }
 
-            abort(401);
+            $principal = ActingPrincipal::local('bfc', $credential);
+            $decision = $this->policy->projectCredential($credential);
+        } else {
+            $principal = $this->principals->resolve();
+            $user = ! $principal->delegated && $principal->principal instanceof User
+                ? $principal->principal
+                : null;
+            $decision = $this->policy->decide($principal, $user);
         }
 
-        $principal = $this->principals->resolve();
-        $user = ! $principal->delegated && $principal->principal instanceof User
-            ? $principal->principal
-            : null;
-        $decision = $this->policy->decide($principal, $user);
         $allowed = match ($ability) {
             'usage' => $decision->usage,
             'content' => $decision->content,
