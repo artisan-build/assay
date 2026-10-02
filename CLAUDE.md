@@ -6,8 +6,8 @@ datasets while keeping customer content on customer-owned infrastructure.
 
 The authoritative product definition is
 `/Users/edgrosvenor/Herd/brain/ideas/2026-09-29-assay-prd.md`; its section 2 is locked. Read it before
-adding product behavior. The current repository is only the server scaffold, package boundaries,
-and quality/release tooling.
+changing product behavior. The repository contains the server, contracts package, client package, and
+quality/release tooling.
 
 ## Product Boundaries
 
@@ -16,7 +16,7 @@ and quality/release tooling.
   outbound payload hook defined by the product plan.
 - v1 does not include model prices, budgets, invoice reconciliation, replay, scoring, non-`laravel/ai`
   drivers, or multi-tenant hosting.
-- Do not implement behavior assigned to later PRs while working on scaffold or infrastructure changes.
+- Do not redesign locked product behavior during maintenance or infrastructure changes.
 
 ## Workflow
 

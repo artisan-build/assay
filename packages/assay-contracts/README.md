@@ -51,28 +51,86 @@ The v1 envelope wire keys are `envelope_version`, `envelope_id`, `sent_at`, `cli
 `environment`, optional `deploy`, `dropped_transport_total`, `dropped_hook_total`, and `records`.
 `Client` carries `package` and `version`; each `Source` carries `driver`, `package`, and `version`.
 
-Each `RecordV1` requires `record_id`, `source`, `type`, `operation`, `at`, `capture`, and `sampled`.
-It optionally carries `invocation_id`, positive `attempt`, `parent_invocation_id`,
-`parent_tool_invocation_id`, non-negative `step`, `tool_invocation_id`, `subject`, `usage`, `model`, and
-`content`. Content is accepted only when `capture` is `full`.
+Ordinary `RecordV1` records require `record_id`, `source`, `type`, `operation`, `invocation_id`, `at`,
+`capture`, and `sampled`. Agent records also require a positive `attempt`; non-agent records omit it. The
+remaining linkage fields are type-specific: parent ids are optional, step records require a non-negative
+`step`, and tool records require `tool_invocation_id`.
+
+Usage-class metadata is carried by the optional `subject`, `usage`, `model`, `agent`, `tool`,
+`duration_ms`, `finish_reason`, `outcome`, `approval`, `failure_class`, `failure_capture`, and
+`replay_inputs_omitted` fields. Placement is validated by record type. In particular, `run.end` and
+`tool.end` require `outcome`; `tool.approval` requires `approval`; `failure_capture` belongs only to an
+unsampled failed agent `run.end`; and `replay_inputs_omitted` belongs only to an agent `run.end`.
+
+One exception to the ordinary required shape is an unattributed non-agent `run.failover`. It requires
+provider and requested model, but omits `operation`, invocation and parent linkage, and `attempt` because
+the source event exposes no invocation id.
 
 `RecordType` defines `run.start`, `run.end`, `run.failover`, `step.start`, `step.end`, `step.fail`,
-`tool.start`, `tool.end`, and `tool.approval`. `Operation` defines `agent`, `embeddings`, `image`, `audio`,
-`transcription`, `reranking`, and `classification`. `CaptureMode` defines `usage` and `full`.
+`tool.start`, `tool.end`, `tool.approval`, and `content.attach`. `Operation` defines `agent`, `embeddings`,
+`image`, `audio`, `transcription`, `reranking`, and `classification`. `CaptureMode` defines `usage` and
+`full`.
 
-`EnvelopeCodec::decode()` rejects malformed JSON, envelope versions other than `1`, invalid UUIDv7
-values, timestamps without six-digit microseconds, invalid enum values, incorrect object/list/scalar
-shapes, negative counters or usage, non-positive attempts, and negative steps. Unknown fields are ignored
-at every defined v1 object layer so additive wire changes remain compatible.
+### Content
+
+`content` is accepted only with `capture: full`. It is a finite JSON object validated against a per-record
+allowlist:
+
+| Record | Allowed content keys |
+|---|---|
+| Agent `run.start` | `instructions`, `tools` |
+| Agent `step.start` | `message_hashes`, `new_messages` |
+| Agent `step.end` | `output_text`, `structured_output`, `tool_calls` |
+| Agent `step.fail` | `exception_message` |
+| Agent `tool.start` | `arguments` |
+| Successful agent `tool.end` | `result` |
+| Failed agent `tool.end` | `result`, `exception_message` |
+| Failed agent `run.end` | `exception_message` |
+| Embeddings `run.start` | `inputs` |
+| Image `run.start` / `run.end` | `prompt` / `count`, `dimensions` |
+| Audio `run.start` | `text` |
+| Transcription `run.end` | `text` |
+| Reranking `run.start` / `run.end` | `query`, `documents` / `results` |
+| Classification `run.start` / `run.end` | `prompt`, `labels` / `answers` |
+
+Provider options, continuation tokens, provider replay blocks, raw provider responses, credentials,
+headers, endpoints, attachment and media bytes or locators, and embedding vectors have no wire field.
+
+### Content Attach
+
+Always-on-failure capture sends ordinary records immediately without content, then sends buffered content
+on failure as `content.attach`. This record has an exact seven-field shape:
+
+```json
+{
+  "record_id": "<new uuid7>",
+  "type": "content.attach",
+  "target_record_id": "<original record uuid7>",
+  "invocation_id": "<same invocation>",
+  "at": "2026-10-01T12:00:00.000000Z",
+  "capture": "full",
+  "content": {}
+}
+```
+
+It omits `source`, `operation`, `sampled`, `attempt`, parent ids, step/tool ids, subject, usage, model, and
+all usage-class metadata. Unknown fields are rejected for this record type rather than ignored. The server
+accepts an attach only for a record owned by the same authenticated installation and invocation; the first
+attach wins.
+
+`EnvelopeCodec::decode()` rejects malformed JSON, envelope versions other than `1`, invalid UUIDv7 values,
+timestamps without six-digit microseconds, invalid enum values, incorrect object/list/scalar shapes,
+negative counters or usage, non-positive attempts, negative steps, invalid metadata placement, and content
+outside its allowlist. Unknown fields are ignored at ordinary defined v1 object layers so additive wire
+changes remain compatible; `content.attach` deliberately enforces its exact shape.
 
 `Usage` accepts only `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
 `cache_write_input_tokens`, `reasoning_tokens`, `image_input_tokens`, `image_output_tokens`,
 `audio_seconds`, and `search_units`. When present it requires at least one reported metric and omits every
 metric whose constructor argument is `null`. Values may be integers or finite non-negative floats, so
 fractional units retain their precision. `Model` independently and optionally carries `requested`,
-`responded`, and `provider`, and requires at least one value when present. `Content` accepts an associative
-array and carries that JSON object only for full capture; this package does not interpret or persist its
-structure.
+`responded`, and `provider`, and requires at least one value when present. `Content` stores canonical JSON
+and validates its final record-specific wire shape; this package does not persist it.
 
 `EnvelopeV1::fromArray()`, `RecordV1::fromArray()`, and the metadata DTO `fromArray()` methods are
 available when callers already have decoded data. `toArray()` methods emit canonical snake_case wire
