@@ -23,14 +23,14 @@ it('loads the Assay manifest and released provider defaults', function (): void 
 
     expect(config('built-for-cloud.manifest'))->toBe($catalogEntry)
         ->and(config('built-for-cloud.ui'))->toBe([
-        'landing_page' => true,
-        'member_management' => true,
-        'personal_credentials' => false,
-        'installation_credentials' => true,
-        'session_management' => true,
-        'managed_transitions' => true,
-        'credential_purposes' => ['assay.ingest'],
-    ])->and(config('built-for-cloud.product'))->toBe(config('app.name'))
+            'landing_page' => true,
+            'member_management' => true,
+            'personal_credentials' => false,
+            'installation_credentials' => true,
+            'session_management' => true,
+            'managed_transitions' => true,
+            'credential_purposes' => ['assay.ingest'],
+        ])->and(config('built-for-cloud.product'))->toBe(config('app.name'))
         ->and(config('built-for-cloud.credentials.guard'))->toBe('bfc')
         ->and(config('auth.defaults.guard'))->toBe('web')
         ->and(config('auth.providers.users.model'))->toBe(User::class)
