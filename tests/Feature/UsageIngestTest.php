@@ -129,6 +129,66 @@ it('stores every record type and operation from contract objects while assemblin
         ->value('value'))->toBe('0.125');
 });
 
+it('does not persist a self-parent from contract-valid ingest', function (): void {
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'invocation_id' => 'self-parent',
+            'parent_invocation_id' => 'self-parent',
+        ]),
+    ]));
+
+    $run = DB::table('assay_runs')->where('invocation_id', 'self-parent')->sole();
+
+    expect($run->parent_run_id)->toBeNull();
+});
+
+it('does not close an out-of-order two-node ancestry cycle', function (): void {
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'invocation_id' => 'two-cycle-a',
+            'parent_invocation_id' => 'two-cycle-b',
+        ]),
+        EnvelopeFactory::record([
+            'invocation_id' => 'two-cycle-b',
+            'parent_invocation_id' => 'two-cycle-a',
+        ]),
+    ]));
+
+    $runs = DB::table('assay_runs')->whereIn('invocation_id', ['two-cycle-a', 'two-cycle-b'])
+        ->pluck('parent_run_id', 'invocation_id');
+    $runB = DB::table('assay_runs')->where('invocation_id', 'two-cycle-b')->value('id');
+
+    expect($runs['two-cycle-a'])->toBe($runB)
+        ->and($runs['two-cycle-b'])->toBeNull();
+});
+
+it('does not close an out-of-order multi-node ancestry cycle', function (): void {
+    processEnvelope(EnvelopeFactory::envelope([
+        EnvelopeFactory::record([
+            'invocation_id' => 'multi-cycle-a',
+            'parent_invocation_id' => 'multi-cycle-b',
+        ]),
+        EnvelopeFactory::record([
+            'invocation_id' => 'multi-cycle-b',
+            'parent_invocation_id' => 'multi-cycle-c',
+        ]),
+        EnvelopeFactory::record([
+            'invocation_id' => 'multi-cycle-c',
+            'parent_invocation_id' => 'multi-cycle-a',
+        ]),
+    ]));
+
+    $runs = DB::table('assay_runs')->whereIn('invocation_id', [
+        'multi-cycle-a', 'multi-cycle-b', 'multi-cycle-c',
+    ])->pluck('parent_run_id', 'invocation_id');
+    $runB = DB::table('assay_runs')->where('invocation_id', 'multi-cycle-b')->value('id');
+    $runC = DB::table('assay_runs')->where('invocation_id', 'multi-cycle-c')->value('id');
+
+    expect($runs['multi-cycle-a'])->toBe($runB)
+        ->and($runs['multi-cycle-b'])->toBe($runC)
+        ->and($runs['multi-cycle-c'])->toBeNull();
+});
+
 it('keeps run end summaries authoritative after chronological recovery and failover', function (): void {
     processEnvelope(EnvelopeFactory::envelope([
         EnvelopeFactory::record(['type' => 'run.start', 'invocation_id' => 'recovered-run']),

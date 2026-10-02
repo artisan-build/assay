@@ -271,6 +271,103 @@ it('executes the complete tool surface with bounded app isolation and metadata c
         ->not->toContain('SQLSTATE');
 });
 
+it('bounds reliability and dataset paging while preserving deterministic later pages', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Mcp,
+        'subject_type' => SubjectType::ExternalConsumer,
+        'subject_ref' => 'mcp-paging',
+        'abilities' => [AssayCredentialAbility::Usage->value, AssayCredentialAbility::Content->value],
+    ]);
+    $records = [];
+
+    for ($agent = 0; $agent < 120; $agent++) {
+        $records[] = EnvelopeFactory::record([
+            'type' => 'run.end',
+            'invocation_id' => 'mcp-reliability-'.$agent,
+            'agent' => sprintf('McpReliabilityAgent%03d', $agent),
+            'outcome' => 'completed',
+        ]);
+    }
+
+    resolve(UsageIngestProcessor::class)->process(
+        'mcp-paging-app',
+        '2026-10-01T12:10:00.000000+00:00',
+        EnvelopeFactory::envelope($records)->toArray(),
+    );
+
+    $manager = resolve(DatasetManager::class);
+
+    for ($index = 0; $index < 105; $index++) {
+        $manager->create(sprintf('MCP Dataset %03d', $index));
+    }
+
+    $reliabilityFirst = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'reliability_summary'));
+    $reliabilityLater = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'reliability_summary', [
+        'limit' => 100, 'offset' => 100,
+    ]));
+    $datasetFirst = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'dataset_list'));
+    $datasetLater = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'dataset_list', [
+        'limit' => 100, 'offset' => 100,
+    ]));
+
+    expect($reliabilityFirst['rows'])->toHaveCount(100)
+        ->and($reliabilityLater['rows'])->toHaveCount(21)
+        ->and($reliabilityLater)->toBe(mcp8Result(mcp8Call('/mcp/destructive', $credential, 'reliability_summary', [
+            'limit' => 100, 'offset' => 100,
+        ])))
+        ->and($datasetFirst['datasets'])->toHaveCount(100)
+        ->and($datasetLater['datasets'])->toHaveCount(5)
+        ->and(array_column($datasetLater['datasets'], 'name'))->toBe([
+            'MCP Dataset 100', 'MCP Dataset 101', 'MCP Dataset 102', 'MCP Dataset 103', 'MCP Dataset 104',
+        ])
+        ->and($datasetLater)->toBe(mcp8Result(mcp8Call('/mcp/destructive', $credential, 'dataset_list', [
+            'limit' => 100, 'offset' => 100,
+        ])));
+});
+
+it('returns at most five hundred unique run tree rows through MCP for adversarial stored cycles', function (): void {
+    $credential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Mcp,
+        'subject_type' => SubjectType::ExternalConsumer,
+        'subject_ref' => 'mcp-cycle-tree',
+        'abilities' => [AssayCredentialAbility::Usage->value],
+    ]);
+    $records = [EnvelopeFactory::record([
+        'invocation_id' => 'mcp-cycle-root',
+        'at' => '2026-10-01T17:00:00.000000+00:00',
+    ])];
+
+    for ($child = 0; $child < 501; $child++) {
+        $records[] = EnvelopeFactory::record([
+            'invocation_id' => 'mcp-cycle-child-'.$child,
+            'parent_invocation_id' => 'mcp-cycle-root',
+            'at' => '2026-10-01T17:00:01.000000+00:00',
+        ]);
+    }
+
+    foreach (array_chunk($records, 251) as $chunk) {
+        resolve(UsageIngestProcessor::class)->process(
+            'mcp-cycle-tree-app',
+            '2026-10-01T17:01:00.000000+00:00',
+            EnvelopeFactory::envelope($chunk)->toArray(),
+        );
+    }
+
+    $root = (string) DB::table('assay_runs')->where('invocation_id', 'mcp-cycle-root')->value('id');
+    $cycleChild = (string) DB::table('assay_runs')->where('invocation_id', 'mcp-cycle-child-0')->value('id');
+    DB::table('assay_runs')->where('id', $root)->update(['parent_run_id' => $cycleChild]);
+    DB::statement("SET LOCAL statement_timeout = '2000ms'");
+
+    $result = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'run_tree', [
+        'app' => 'mcp-cycle-tree-app', 'run_id' => $root,
+    ]));
+    $runIds = array_column($result['rows'], 'run_id');
+
+    expect($result['rows'])->toHaveCount(500)
+        ->and($runIds)->toHaveCount(count(array_unique($runIds)))
+        ->and($runIds)->toContain($root);
+});
+
 it('denies every handle before validation query or effect when its Assay ability is absent', function (): void {
     $usage = $this->mintCredential([
         'purpose' => CredentialPurpose::Mcp,

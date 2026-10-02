@@ -218,7 +218,7 @@ final readonly class UsageIngestProcessor
             $values['replay_inputs_omitted'] = json_encode($values['replay_inputs_omitted'], JSON_THROW_ON_ERROR);
         }
 
-        if ($parentRunId !== null) {
+        if ($parentRunId !== null && ! $this->wouldCreateCycle((string) $existing->app_id, $runId, $parentRunId)) {
             $values['parent_run_id'] = $parentRunId;
         }
 
@@ -261,6 +261,27 @@ final readonly class UsageIngestProcessor
         }
 
         DB::table('assay_runs')->where('id', $runId)->update($values);
+    }
+
+    private function wouldCreateCycle(string $appId, string $runId, string $parentRunId): bool
+    {
+        $result = DB::selectOne(<<<'SQL'
+            WITH RECURSIVE ancestry AS (
+                SELECT id, parent_run_id, ARRAY[id]::uuid[] AS path
+                FROM assay_runs
+                WHERE app_id = ? AND id = ?
+
+                UNION ALL
+
+                SELECT parent.id, parent.parent_run_id, child.path || parent.id
+                FROM assay_runs parent
+                INNER JOIN ancestry child ON child.parent_run_id = parent.id
+                WHERE parent.app_id = ? AND NOT parent.id = ANY(child.path)
+            )
+            SELECT EXISTS (SELECT 1 FROM ancestry WHERE id = ?) AS creates_cycle
+            SQL, [$appId, $parentRunId, $appId, $runId]);
+
+        return (bool) ($result->creates_cycle ?? false);
     }
 
     /** @param array<string, mixed> $record */

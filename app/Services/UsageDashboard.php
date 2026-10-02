@@ -316,11 +316,9 @@ final class UsageDashboard
         );
     }
 
-    public function reliability(int $limit = 100, int $offset = 0): DashboardTable
+    public function reliability(?int $limit = null, int $offset = 0): DashboardTable
     {
-        $limit = $this->limit($limit);
-        $offset = max(0, min(10000, $offset));
-        $rows = $this->rows(<<<'SQL'
+        $query = <<<'SQL'
             WITH agent_rates AS (
                 SELECT
                     COALESCE(agent, 'not_reported') AS dimension,
@@ -510,8 +508,15 @@ final class UsageDashboard
                 qualification
             FROM reliability_rows
             ORDER BY sort_order, dimension NULLS FIRST, provider NULLS FIRST, model NULLS FIRST
-            LIMIT ? OFFSET ?
-            SQL, [$limit, $offset]);
+            SQL;
+        $bindings = [];
+
+        if ($limit !== null) {
+            $query .= "\nLIMIT ? OFFSET ?";
+            $bindings = [$this->limit($limit), max(0, min(10000, $offset))];
+        }
+
+        $rows = $this->rows($query, $bindings);
 
         return new DashboardTable(
             [
@@ -852,17 +857,20 @@ final class UsageDashboard
     {
         $rows = $this->rows(<<<'SQL'
             WITH RECURSIVE run_tree AS (
-                SELECT run.*
+                SELECT run.*, ARRAY[run.id]::uuid[] AS path, 0 AS depth
                 FROM assay_runs run
                 INNER JOIN assay_apps app ON app.id = run.app_id
                 WHERE app.app_ref = ? AND run.id = ?
 
                 UNION ALL
 
-                SELECT child.*
+                SELECT child.*, parent.path || child.id, parent.depth + 1
                 FROM assay_runs child
                 INNER JOIN run_tree parent ON child.parent_run_id = parent.id
-                WHERE child.app_id = parent.app_id
+                WHERE
+                    child.app_id = parent.app_id
+                    AND parent.depth < 499
+                    AND NOT child.id = ANY(parent.path)
             )
             SELECT
                 id AS run_id,
