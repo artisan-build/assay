@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Authorization\AssayCredentialAbility;
 use App\Enums\ContentAccess;
 use App\Http\Middleware\EnsureAssayAccess;
+use App\Http\Middleware\PreventRequestForgery;
 use App\Models\ContentAccessOverride;
 use App\Services\DatasetManager;
 use ArtisanBuild\BuiltForCloud\Actions\MintCredential;
@@ -27,12 +28,20 @@ use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
 use ArtisanBuild\BuiltForCloud\User;
 use ArtisanBuild\BuiltForCloud\UserRole;
 use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Http\Kernel;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery as FrameworkRequestForgery;
 use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Routing\Route as RoutingRoute;
+use Illuminate\Session\ArraySessionHandler;
+use Illuminate\Session\Store;
+use Illuminate\Session\TokenMismatchException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 uses(WithCredentials::class);
 
@@ -81,6 +90,47 @@ function pr7bProtectedRoutes(): array
         'assay.exports.download' => 'content',
     ];
 }
+
+it('keeps browser forgery protection while routing Assay bearers to the access gate', function (): void {
+    $web = resolve(Kernel::class)->getMiddlewareGroups()['web'];
+    $replacement = array_search(PreventRequestForgery::class, $web, true);
+
+    expect($replacement)->toBeInt()
+        ->and($web[$replacement - 1])->toBe(ShareErrorsFromSession::class)
+        ->and($web[$replacement + 1])->toBe(SubstituteBindings::class)
+        ->and($web)->not->toContain(FrameworkRequestForgery::class);
+
+    $protectedRoute = Route::getRoutes()->getByName('assay.datasets.create');
+    expect($protectedRoute)->toBeInstanceOf(RoutingRoute::class);
+
+    $request = Request::create('/assay/datasets', 'POST');
+    $request->setRouteResolver(static fn (): RoutingRoute => $protectedRoute);
+
+    foreach (['Bearer credential', 'bearer ', '  Bearer credential'] as $authorization) {
+        $request->headers->set('Authorization', $authorization);
+        expect(PreventRequestForgery::shouldBypassForAssayBearer($request))->toBeTrue();
+    }
+
+    $request->headers->set('Authorization', 'Basic credential');
+    expect(PreventRequestForgery::shouldBypassForAssayBearer($request))->toBeFalse();
+
+    $ordinaryRoute = new RoutingRoute(['POST'], '/ordinary', static fn (): string => 'ordinary');
+    $request->headers->set('Authorization', 'Bearer credential');
+    $request->setRouteResolver(static fn (): RoutingRoute => $ordinaryRoute);
+    $request->setLaravelSession(new Store('pr7b-forgery-proof', new ArraySessionHandler(60)));
+    expect(PreventRequestForgery::shouldBypassForAssayBearer($request))->toBeFalse();
+
+    app()->detectEnvironment(static fn (): string => 'production');
+
+    try {
+        expect(fn () => resolve(PreventRequestForgery::class)->handle(
+            $request,
+            static fn (): never => throw new LogicException('Browser request bypassed forgery protection.'),
+        ))->toThrow(TokenMismatchException::class);
+    } finally {
+        app()->detectEnvironment(static fn (): string => 'testing');
+    }
+});
 
 it('registers the exact Assay vocabulary and accepts it through released model and mint validation', function (): void {
     CredentialAbilityAssertions::assertRegistered(

@@ -31,11 +31,7 @@ final readonly class EnsureAssayAccess
     /** @param Closure(Request): Response $next */
     public function handle(Request $request, Closure $next, string $ability): Response
     {
-        $authorization = $request->header('Authorization');
-        $hasBearer = is_string($authorization)
-            && preg_match('/^\s*Bearer(?:\s|$)/i', $authorization) === 1;
-
-        if ($hasBearer) {
+        if (self::hasBearerHeader($request)) {
             $credential = $this->bearer->credential($request);
 
             if (! $credential instanceof Credential) {
@@ -66,6 +62,14 @@ final readonly class EnsureAssayAccess
         $request->attributes->set(self::DECISION, $decision);
 
         return $next($request);
+    }
+
+    public static function hasBearerHeader(Request $request): bool
+    {
+        $authorization = $request->header('Authorization');
+
+        return is_string($authorization)
+            && preg_match('/^\s*Bearer(?:\s|$)/i', $authorization) === 1;
     }
 
     public static function principal(Request $request): ActingPrincipal
