@@ -38,7 +38,7 @@
 
     <section data-testid="risk-dataset-curation">
         <h2>Dataset curation and export</h2>
-        <p>Dataset items are immutable curated copies and can outlive source run content. Their retention starts when each item is added, defaults to 365 days, can be configured per dataset, and supports an explicit no-expiry choice.</p>
+        <p>Dataset items are immutable curated copies and can outlive source run content. Their retention starts when each item is added, defaults to 365 days, and cannot exceed usage metadata retention so source ancestry remains available for erasure.</p>
         <p>JSONL exports are rendered from current live rows and never stored as files. Export request URLs are not bearer capabilities: download requires the same authenticated principal, a fresh content-access decision, and a request no more than 15 minutes old. Subject erasure removes matching curated items and is reflected by every later download.</p>
     </section>
 

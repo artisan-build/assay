@@ -55,14 +55,27 @@ final readonly class DatasetExporter
 
             $items = DB::table('assay_dataset_items')->where('dataset_id', $request->dataset_id)
                 ->oldest('added_at')->orderBy('id')->get();
+            $included = [];
 
             foreach ($items as $item) {
-                if (is_string($item->subject_tombstone) && $item->subject_tombstone !== '') {
-                    $this->barrier->lock((string) $item->app_id, $item->subject_tombstone);
+                $source = is_string($item->source_run_id)
+                    ? $this->barrier->runSubject((string) $item->app_id, $item->source_run_id)
+                    : ['exists' => false, 'subject' => null];
+                $subject = $source['exists']
+                    ? $source['subject']
+                    : (is_string($item->subject_tombstone) && $item->subject_tombstone !== '' ? $item->subject_tombstone : null);
+
+                if ($subject === null || $this->barrier->allowsSubject(
+                    (string) $item->app_id,
+                    $subject,
+                    CarbonImmutable::parse((string) $item->source_occurred_at),
+                )) {
+                    $included[] = (string) $item->id;
                 }
             }
 
             $items = DB::table('assay_dataset_items')->where('dataset_id', $request->dataset_id)
+                ->whereIn('id', $included)
                 ->oldest('added_at')->orderBy('id')->get(['id', 'snapshot']);
             $lines = [];
 

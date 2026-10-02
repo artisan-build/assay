@@ -26,6 +26,12 @@ final readonly class RetentionPruner
 
         $contentDays = $this->positiveConfig('assay.retention.run_content_days');
         $usageDays = $this->positiveConfig('assay.retention.usage_days');
+        $datasetDays = config('assay.retention.dataset_days');
+
+        if (! is_int($datasetDays) || $datasetDays < 1 || $datasetDays > $usageDays) {
+            throw new RuntimeException('Dataset retention must be a positive integer no greater than usage metadata retention.');
+        }
+
         $contentCutoff = $asOf->subDays($contentDays);
         $usageCutoff = $asOf->subDays($usageDays);
         $contentDeleted = 0;

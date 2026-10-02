@@ -141,7 +141,7 @@ it('serializes export rendering on both sides of erasure and later rendering rea
     $owner->forceFill(['role' => UserRole::Owner->value, 'status' => 'active'])->save();
     $principal = ActingPrincipal::local('web', $owner);
     $source = seedDatasetRaceRun('export-race', 'export-race-subject');
-    $dataset = resolve(DatasetManager::class)->create('Export race', null);
+    $dataset = resolve(DatasetManager::class)->create('Export race');
     resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
     $request = resolve(DatasetExporter::class)->request($dataset['id'], $principal);
 
@@ -172,7 +172,7 @@ it('allows an export ordered first while the waiting erasure removes all later l
     $owner->forceFill(['role' => UserRole::Owner->value, 'status' => 'active'])->save();
     $principal = ActingPrincipal::local('web', $owner);
     $source = seedDatasetRaceRun('export-first', 'export-first-subject');
-    $dataset = resolve(DatasetManager::class)->create('Export first', null);
+    $dataset = resolve(DatasetManager::class)->create('Export first');
     resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
     $request = resolve(DatasetExporter::class)->request($dataset['id'], $principal);
 

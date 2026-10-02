@@ -46,6 +46,39 @@ final readonly class SubjectErasureBarrier
         return ['allowed' => $this->allows($appId, $subject, $occurredAt), 'subject' => $subject];
     }
 
+    /** @return array{exists: bool, subject: string|null} */
+    public function runSubject(string $appId, string $runId): array
+    {
+        /** @var stdClass $row */
+        $row = DB::selectOne(<<<'SQL'
+            WITH RECURSIVE ancestry AS (
+                SELECT id, parent_run_id, subject, 0 AS depth, ARRAY[id] AS path
+                FROM assay_runs
+                WHERE app_id = ? AND id = ?
+                UNION ALL
+                SELECT parent.id, parent.parent_run_id, parent.subject, child.depth + 1, child.path || parent.id
+                FROM assay_runs AS parent
+                JOIN ancestry AS child ON child.parent_run_id = parent.id
+                WHERE parent.app_id = ? AND NOT parent.id = ANY(child.path)
+            )
+            SELECT
+                (SELECT COUNT(*) FROM ancestry) AS run_count,
+                (SELECT subject FROM ancestry WHERE subject IS NOT NULL AND subject != '' ORDER BY depth LIMIT 1) AS subject
+            SQL, [$appId, $runId, $appId]);
+
+        return [
+            'exists' => (int) $row->run_count > 0,
+            'subject' => is_string($row->subject) && $row->subject !== '' ? $row->subject : null,
+        ];
+    }
+
+    public function allowsSubject(string $appId, string $subject, CarbonImmutable $occurredAt): bool
+    {
+        $this->lock($appId, $subject);
+
+        return $this->allows($appId, $subject, $occurredAt);
+    }
+
     public function lock(string $appId, string $subject): void
     {
         foreach ($this->hasher->lockTokens($subject) as $token) {
@@ -99,28 +132,7 @@ final readonly class SubjectErasureBarrier
 
     private function effectiveSubject(string $appId, string $runId): ?string
     {
-        /** @var stdClass|null $row */
-        $row = DB::selectOne(<<<'SQL'
-            WITH RECURSIVE ancestry AS (
-                SELECT id, parent_run_id, subject, 0 AS depth, ARRAY[id] AS path
-                FROM assay_runs
-                WHERE app_id = ? AND id = ?
-                UNION ALL
-                SELECT parent.id, parent.parent_run_id, parent.subject, child.depth + 1, child.path || parent.id
-                FROM assay_runs AS parent
-                JOIN ancestry AS child ON child.parent_run_id = parent.id
-                WHERE parent.app_id = ? AND NOT parent.id = ANY(child.path)
-            )
-            SELECT subject
-            FROM ancestry
-            WHERE subject IS NOT NULL AND subject != ''
-            ORDER BY depth
-            LIMIT 1
-            SQL, [$appId, $runId, $appId]);
-
-        return $row !== null && is_string($row->subject) && $row->subject !== ''
-            ? $row->subject
-            : null;
+        return $this->runSubject($appId, $runId)['subject'];
     }
 
     private function recordQuery(string $appId, string $subject): Builder

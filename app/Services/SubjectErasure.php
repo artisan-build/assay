@@ -168,7 +168,7 @@ final readonly class SubjectErasure
 
         foreach ($this->stores->stores() as $store) {
             if ($store->erasure === 'dataset') {
-                $count = $this->eraseStore($store, $appId, [], $cutoff, $subjects);
+                $count = $this->eraseStore($store, $appId, $runIds, $cutoff, $subjects);
                 $deleted += $count;
                 $datasetItemsDeleted += $count;
 
@@ -270,7 +270,19 @@ final readonly class SubjectErasure
                     ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
                     ->orderBy('flag.run_id')->limit($this->batchSize())->pluck('flag.run_id'),
                 'dataset' => DB::table($store->table)->where('app_id', $appId)
-                    ->whereIn('subject_tombstone', array_filter($subjects, static fn (string $subject): bool => str_starts_with($subject, 'deleted:')))
+                    ->where(function (Builder $query) use ($runIds, $subjects): void {
+                        $tombstones = array_filter($subjects, static fn (string $subject): bool => str_starts_with($subject, 'deleted:'));
+                        $fallback = static function (Builder $query) use ($tombstones): void {
+                            $query->whereNull('source_run_id')->whereIn('subject_tombstone', $tombstones);
+                        };
+
+                        if ($runIds !== []) {
+                            $query->whereIn('source_run_id', $runIds);
+                            $query->orWhere($fallback);
+                        } else {
+                            $query->where($fallback);
+                        }
+                    })
                     ->where('source_occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
                     ->orderBy('id')->limit($this->batchSize())->pluck('id'),
                 'pending_target' => DB::table($store->table.' as pending')

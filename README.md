@@ -53,8 +53,9 @@ unsupported.
 ## Dataset Export
 
 Curated dataset items default to 365 days of retention from item addition. Set
-`ASSAY_DATASET_RETENTION_DAYS` to a positive number of days or `none` for an operator-wide no-expiry
-default; each dataset records its own retention choice. The versioned on-demand JSONL schema, replay
+`ASSAY_DATASET_RETENTION_DAYS` to a positive number of days no greater than
+`ASSAY_USAGE_RETENTION_DAYS`; no-expiry is invalid because source ancestry must outlive each item. Each
+dataset records its own retention choice. The versioned on-demand JSONL schema, replay
 fidelity rule, principal binding, and erasure behavior are documented in
 [`docs/dataset-export-v1.md`](docs/dataset-export-v1.md).
 

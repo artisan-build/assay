@@ -117,6 +117,23 @@ function ingestPr7Run(
     ];
 }
 
+function ingestPr7LateSubject(string $invocation, string $subject): void
+{
+    $record = EnvelopeFactory::record([
+        'type' => 'run.start',
+        'invocation_id' => $invocation,
+        'capture' => 'full',
+        'sampled' => true,
+        'subject' => $subject,
+        'agent' => 'App\\Ai\\DatasetAgent',
+    ]);
+    $envelope = EnvelopeFactory::envelope([$record]);
+    resolve(UsageIngestProcessor::class)->process('pr7-app', '2026-10-01T12:20:00.000000+00:00', [
+        ...$envelope->toArray(),
+        'records' => [$record->toArray()],
+    ]);
+}
+
 beforeEach(function (): void {
     Storage::fake('pr7-erasure');
     config()->set('assay.erasure.journal_disk', 'pr7-erasure');
@@ -180,7 +197,7 @@ it('rejects incomplete content and derives replay fidelity only from omission pr
         ->and(DB::table('assay_dataset_items')->count())->toBe(2);
 });
 
-it('resolves browser dataset retention choices and preserves explicit JSON no-expiry', function (): void {
+it('resolves bounded browser dataset retention choices and rejects no-expiry', function (): void {
     $owner = createPr7User('Dataset Form Owner', UserRole::Owner);
 
     $defaultResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
@@ -188,7 +205,7 @@ it('resolves browser dataset retention choices and preserves explicit JSON no-ex
         'retention_mode' => 'default',
         'retention_days' => '',
     ])->assertRedirect();
-    config()->set('assay.retention.dataset_days', 90);
+    config()->set('assay.retention.dataset_days', 395);
     $configuredResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
         'name' => 'Browser configured default',
         'retention_mode' => 'default',
@@ -199,37 +216,56 @@ it('resolves browser dataset retention choices and preserves explicit JSON no-ex
         'retention_mode' => 'custom',
         'retention_days' => '30',
     ])->assertRedirect();
-    $noneResponse = $this->actingAs($owner)->post(route('assay.datasets.create'), [
+    $this->actingAs($owner)->post(route('assay.datasets.create'), [
         'name' => 'Browser no expiry',
         'retention_mode' => 'no_expiry',
         'retention_days' => '',
-    ])->assertRedirect();
-    $jsonResponse = $this->actingAs($owner)->postJson(route('assay.datasets.create'), [
+    ])->assertSessionHasErrors('retention_mode');
+    $this->actingAs($owner)->postJson(route('assay.datasets.create'), [
         'name' => 'JSON no expiry',
         'retention_days' => null,
-    ])->assertCreated();
+    ])->assertUnprocessable()->assertJsonValidationErrors('retention_days');
 
     $this->actingAs($owner)->post(route('assay.datasets.create'), [
         'name' => 'Contradictory retention',
         'retention_mode' => 'no_expiry',
         'retention_days' => '30',
-    ])->assertSessionHasErrors('retention_days');
+    ])->assertSessionHasErrors('retention_mode');
     $this->actingAs($owner)->post(route('assay.datasets.create'), [
         'name' => 'Missing custom retention',
         'retention_mode' => 'custom',
         'retention_days' => '',
     ])->assertSessionHasErrors('retention_days');
+    $this->actingAs($owner)->post(route('assay.datasets.create'), [
+        'name' => 'Above usage retention',
+        'retention_mode' => 'custom',
+        'retention_days' => '396',
+    ])->assertSessionHasErrors('retention_days');
 
     expect(DB::table('assay_datasets')->where('name', 'Browser default retention')->value('retention_days'))->toBe(365)
-        ->and(DB::table('assay_datasets')->where('name', 'Browser configured default')->value('retention_days'))->toBe(90)
+        ->and(DB::table('assay_datasets')->where('name', 'Browser configured default')->value('retention_days'))->toBe(395)
         ->and(DB::table('assay_datasets')->where('name', 'Browser custom retention')->value('retention_days'))->toBe(30)
-        ->and(DB::table('assay_datasets')->where('name', 'Browser no expiry')->value('retention_days'))->toBeNull()
-        ->and($jsonResponse->json('retention_days'))->toBeNull()
-        ->and(DB::table('assay_datasets')->count())->toBe(5);
+        ->and(DB::table('assay_datasets')->count())->toBe(3);
 
-    foreach ([$defaultResponse, $configuredResponse, $customResponse, $noneResponse] as $response) {
+    foreach ([$defaultResponse, $configuredResponse, $customResponse] as $response) {
         $response->assertRedirect();
     }
+});
+
+it('requires every dataset retention choice to fit within usage metadata retention', function (): void {
+    $manager = resolve(DatasetManager::class);
+
+    expect($manager->create('Below usage retention', 394)['retention_days'])->toBe(394)
+        ->and($manager->create('Equal to usage retention', 395)['retention_days'])->toBe(395);
+
+    config()->set('assay.retention.dataset_days', 396);
+    expect(fn () => $manager->create('Invalid configured default'))->toThrow(RuntimeException::class);
+
+    config()->set('assay.retention.dataset_days', null);
+    expect(fn () => $manager->create('Invalid configured no expiry'))->toThrow(RuntimeException::class)
+        ->and(fn () => $manager->create('Invalid custom retention', 396))->toThrow(RuntimeException::class)
+        ->and(fn () => $manager->create('Invalid explicit no expiry', null))->toThrow(RuntimeException::class)
+        ->and(DB::table('assay_datasets')->count())->toBe(2);
 });
 
 it('exports deterministic live JSONL without storing an artifact and binds fresh downloads to the requesting principal', function (): void {
@@ -269,29 +305,29 @@ it('exports deterministic live JSONL without storing an artifact and binds fresh
     $this->actingAs($other)->get($fresh['download_url'])->assertForbidden();
 });
 
-it('applies default custom and no-expiry dataset retention in bounded batches without changing usage totals', function (): void {
+it('applies bounded default custom and maximum dataset retention without changing usage totals', function (): void {
     $defaultSource = ingestPr7Run('retention-default', 'retention-a');
     $customSource = ingestPr7Run('retention-custom', 'retention-b', 'TWO');
     $noneSource = ingestPr7Run('retention-none', 'retention-c', 'THREE');
     $default = resolve(DatasetManager::class)->create('Default');
     $custom = resolve(DatasetManager::class)->create('Custom', 1);
-    $none = resolve(DatasetManager::class)->create('Forever', null);
+    $maximum = resolve(DatasetManager::class)->create('Maximum', 395);
     $defaultItem = resolve(DatasetManager::class)->add($default['id'], $defaultSource['run_id']);
     $customItem = resolve(DatasetManager::class)->add($custom['id'], $customSource['run_id']);
-    $noneItem = resolve(DatasetManager::class)->add($none['id'], $noneSource['run_id']);
+    $maximumItem = resolve(DatasetManager::class)->add($maximum['id'], $noneSource['run_id']);
     $asOf = CarbonImmutable::parse('2026-10-01T12:00:00+00:00');
     DB::table('assay_dataset_items')->where('id', $defaultItem['id'])->update(['expires_at' => $asOf->format('Y-m-d H:i:s.uP')]);
     DB::table('assay_dataset_items')->where('id', $customItem['id'])->update(['expires_at' => $asOf->subMicrosecond()->format('Y-m-d H:i:s.uP')]);
-    DB::table('assay_dataset_items')->where('id', $noneItem['id'])->update(['expires_at' => null]);
+    DB::table('assay_dataset_items')->where('id', $maximumItem['id'])->update(['expires_at' => $asOf->addMicrosecond()->format('Y-m-d H:i:s.uP')]);
     $usage = DB::table('assay_usage_metrics')->sum('value');
 
     $result = resolve(RetentionPruner::class)->prune($asOf, 1);
 
     expect($default['retention_days'])->toBe(365)
         ->and($custom['retention_days'])->toBe(1)
-        ->and($none['retention_days'])->toBeNull()
+        ->and($maximum['retention_days'])->toBe(395)
         ->and($result['dataset_items_deleted'])->toBe(2)
-        ->and(DB::table('assay_dataset_items')->pluck('id')->all())->toBe([$noneItem['id']])
+        ->and(DB::table('assay_dataset_items')->pluck('id')->all())->toBe([$maximumItem['id']])
         ->and(DB::table('assay_usage_metrics')->sum('value'))->toEqual($usage);
 });
 
@@ -299,7 +335,7 @@ it('removes flags and dataset items through erasure while preserving usage and r
     $owner = createPr7User('Erasure Export Owner', UserRole::Owner);
     $source = ingestPr7Run('erasure-dataset-run', 'erasure-dataset-subject');
     resolve(RunCuration::class)->flag($source['run_id'], ['ERASURE-LABEL-CANARY'], 'fail', 'ERASURE-NOTE-CANARY');
-    $dataset = resolve(DatasetManager::class)->create('Erasure set', null);
+    $dataset = resolve(DatasetManager::class)->create('Erasure set');
     resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
     $request = $this->actingAs($owner)->postJson(route('assay.datasets.exports.request', $dataset['id']))->json();
     $usage = DB::table('assay_usage_metrics')->sum('value');
@@ -319,7 +355,7 @@ it('removes inherited-subject dataset snapshots and renders later exports empty'
     $subject = 'inherited-dataset-subject';
     $root = ingestPr7Run('inherited-dataset-root', $subject, 'ROOT');
     $child = ingestPr7Run('inherited-dataset-child', null, 'CHILD', parentInvocation: 'inherited-dataset-root');
-    $dataset = resolve(DatasetManager::class)->create('Inherited erasure set', null);
+    $dataset = resolve(DatasetManager::class)->create('Inherited erasure set');
     $item = resolve(DatasetManager::class)->add($dataset['id'], $child['run_id']);
     $identity = resolve(SubjectErasureHasher::class)->active($subject);
     $stored = DB::table('assay_dataset_items')->where('id', $item['id'])->sole();
@@ -340,6 +376,82 @@ it('removes inherited-subject dataset snapshots and renders later exports empty'
     expect($result['dataset_items_deleted'])->toBe(1)
         ->and(DB::table('assay_dataset_items')->count())->toBe(0)
         ->and($download->getContent())->toBe('');
+});
+
+it('removes a snapshot when its subject attaches directly after curation and empties a pre-minted export', function (): void {
+    $owner = createPr7User('Late Direct Subject Owner', UserRole::Owner);
+    $source = ingestPr7Run('late-direct-subject', null, 'LATE-DIRECT');
+    $dataset = resolve(DatasetManager::class)->create('Late direct subject');
+    resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
+    $request = resolve(DatasetExporter::class)->request($dataset['id'], ActingPrincipal::local('web', $owner));
+
+    expect(DB::table('assay_dataset_items')->value('subject_tombstone'))->toBeNull();
+    ingestPr7LateSubject('late-direct-subject', 'late-direct-owner');
+
+    $result = resolve(SubjectErasure::class)->erase(
+        $source['app_id'],
+        'late-direct-owner',
+        CarbonImmutable::parse('2027-01-01T00:00:00+00:00'),
+    );
+
+    expect($result['dataset_items_deleted'])->toBe(1)
+        ->and(DB::table('assay_dataset_items')->count())->toBe(0)
+        ->and(resolve(DatasetExporter::class)->render($request['id'], ActingPrincipal::local('web', $owner)))->toBe('');
+});
+
+it('removes a snapshot when its subject attaches through a parent stub after curation', function (): void {
+    $owner = createPr7User('Late Parent Subject Owner', UserRole::Owner);
+    $source = ingestPr7Run('late-parent-child', null, 'LATE-PARENT', parentInvocation: 'late-parent-root');
+    $dataset = resolve(DatasetManager::class)->create('Late parent subject');
+    resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
+    $request = resolve(DatasetExporter::class)->request($dataset['id'], ActingPrincipal::local('web', $owner));
+
+    expect(DB::table('assay_dataset_items')->value('subject_tombstone'))->toBeNull();
+    ingestPr7LateSubject('late-parent-root', 'late-parent-owner');
+
+    $result = resolve(SubjectErasure::class)->erase(
+        $source['app_id'],
+        'late-parent-owner',
+        CarbonImmutable::parse('2027-01-01T00:00:00+00:00'),
+    );
+
+    expect($result['dataset_items_deleted'])->toBe(1)
+        ->and(DB::table('assay_dataset_items')->count())->toBe(0)
+        ->and(resolve(DatasetExporter::class)->render($request['id'], ActingPrincipal::local('web', $owner)))->toBe('');
+});
+
+it('uses current ancestry while the source exists and the stored subject only after it is gone', function (): void {
+    $owner = createPr7User('Subject Authority Owner', UserRole::Owner);
+    $principal = ActingPrincipal::local('web', $owner);
+    $source = ingestPr7Run('subject-authority', 'stored-subject', 'AUTHORITY');
+    $dataset = resolve(DatasetManager::class)->create('Subject authority');
+    resolve(DatasetManager::class)->add($dataset['id'], $source['run_id']);
+    $request = resolve(DatasetExporter::class)->request($dataset['id'], $principal);
+    ingestPr7LateSubject('subject-authority', 'current-subject');
+
+    $storedErasure = resolve(SubjectErasure::class)->erase(
+        $source['app_id'],
+        'stored-subject',
+        CarbonImmutable::parse('2027-01-01T00:00:00+00:00'),
+    );
+
+    expect($storedErasure['dataset_items_deleted'])->toBe(0)
+        ->and(DB::table('assay_dataset_items')->count())->toBe(1)
+        ->and(resolve(DatasetExporter::class)->render($request['id'], $principal))->toContain('INSTRUCTIONS-AUTHORITY');
+
+    DB::table('assay_runs')->where('id', $source['run_id'])->delete();
+
+    expect(DB::table('assay_dataset_items')->value('source_run_id'))->toBeNull()
+        ->and(resolve(DatasetExporter::class)->render($request['id'], $principal))->toBe('');
+
+    $fallbackErasure = resolve(SubjectErasure::class)->erase(
+        $source['app_id'],
+        'stored-subject',
+        CarbonImmutable::parse('2027-01-01T00:00:00+00:00'),
+    );
+
+    expect($fallbackErasure['dataset_items_deleted'])->toBe(1)
+        ->and(DB::table('assay_dataset_items')->count())->toBe(0);
 });
 
 it('enforces the run flag foreign key and cascades flags with runs and apps', function (): void {
@@ -463,7 +575,7 @@ it('gates every PR7 route through central content policy and keeps usage project
 it('renders structural curation disclosures from test-created data and keeps canaries out of validation logs and queue residue', function (): void {
     $owner = createPr7User('PR7 Surface Owner', UserRole::Owner);
     $source = ingestPr7Run('surface-run', 'surface-subject');
-    $dataset = resolve(DatasetManager::class)->create('SURFACE-DATASET-CANARY', null);
+    $dataset = resolve(DatasetManager::class)->create('SURFACE-DATASET-CANARY');
     $logs = [];
     Log::listen(static function (MessageLogged $event) use (&$logs): void {
         $logs[] = $event->message.json_encode($event->context, JSON_THROW_ON_ERROR);
@@ -474,7 +586,7 @@ it('renders structural curation disclosures from test-created data and keeps can
     $this->actingAs($owner)->get(route('assay.datasets.index'))
         ->assertOk()->assertSee('data-testid="datasets-retention-disclosure"', false)->assertSee('SURFACE-DATASET-CANARY');
     $this->actingAs($owner)->get(route('assay.datasets.show', $dataset['id']))
-        ->assertOk()->assertSee('data-testid="dataset-retention"', false)->assertSee('No expiry');
+        ->assertOk()->assertSee('data-testid="dataset-retention"', false)->assertSee('365 days from item addition');
     $this->actingAs($owner)->get(route('assay.risk'))
         ->assertOk()->assertSee('data-testid="risk-dataset-curation"', false);
     $secret = 'VALIDATION-PRIVACY-CANARY';

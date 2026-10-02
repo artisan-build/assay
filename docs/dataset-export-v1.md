@@ -19,7 +19,9 @@ The media type is `application/x-ndjson`. Each line is one UTF-8 JSON object wit
 `partial`; Assay does not infer fidelity from the omitted values themselves. Runs marked
 `content_incomplete` cannot be added.
 
-Dataset retention is counted from item addition. The operator default is 365 days, each dataset may set a
-different positive number of days, and `null` is the explicit no-expiry setting. Curated copies can outlive
-source run content. Delete-by-subject removes matching live items under the same PostgreSQL subject lock used
-by dataset addition and export rendering. A later download always renders the post-erasure live state.
+Dataset retention is counted from item addition. The operator default is 365 days, and each dataset may set a
+different positive number of days no greater than usage metadata retention (395 days by default). No-expiry is
+invalid because source run ancestry must outlive each item. Curated copies can outlive source run content.
+Delete-by-subject and export rendering resolve current run ancestry under the same PostgreSQL subject lock;
+the stored subject handle is used only after the source run is gone. A later download always renders the
+post-erasure live state.

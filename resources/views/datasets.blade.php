@@ -11,7 +11,7 @@
     <h1>Datasets</h1>
     <section data-testid="datasets-retention-disclosure">
         <h2>Curated-copy retention</h2>
-        <p>Dataset items are immutable curated copies. They can outlive their source run content, use their dataset's retention period from the date each item was added, and may explicitly have no expiry.</p>
+        <p>Dataset items are immutable curated copies. They can outlive their source run content, but their retention cannot exceed usage metadata retention so source ancestry remains available.</p>
     </section>
     <form method="post" action="{{ route('assay.datasets.create') }}" data-testid="datasets-create">
         @csrf
@@ -21,8 +21,7 @@
             <legend>Retention</legend>
             <label><input name="retention_mode" type="radio" value="default" checked> Operator default</label>
             <label><input name="retention_mode" type="radio" value="custom"> Custom days</label>
-            <input id="retention_days" name="retention_days" type="number" min="1" max="36500" aria-label="Custom retention days">
-            <label><input name="retention_mode" type="radio" value="no_expiry"> No expiry</label>
+            <input id="retention_days" name="retention_days" type="number" min="1" max="{{ config('assay.retention.usage_days') }}" aria-label="Custom retention days">
         </fieldset>
         <button type="submit">Create dataset</button>
     </form>

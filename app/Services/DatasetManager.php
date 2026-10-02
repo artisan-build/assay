@@ -24,9 +24,14 @@ final readonly class DatasetManager
     public function create(string $name, int|null|false $retentionDays = false): array
     {
         $days = $retentionDays === false ? config('assay.retention.dataset_days') : $retentionDays;
+        $usageDays = config('assay.retention.usage_days');
 
-        if ($days !== null && (! is_int($days) || $days < 1)) {
-            throw new RuntimeException('Dataset retention must be a positive integer or null.');
+        if (! is_int($usageDays) || $usageDays < 1) {
+            throw new RuntimeException('Usage metadata retention must be a positive integer.');
+        }
+
+        if (! is_int($days) || $days < 1 || $days > $usageDays) {
+            throw new RuntimeException('Dataset retention must be a positive integer no greater than usage metadata retention.');
         }
 
         $id = (string) Str::uuid();
