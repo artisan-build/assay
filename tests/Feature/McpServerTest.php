@@ -99,12 +99,12 @@ it('conforms all thirteen eligible tools and snapshots their wire metadata', fun
     ]);
     $discovered = null;
     app()->instance('request', $request);
-    app(AuthenticateMcp::class)->handle(
+    resolve(AuthenticateMcp::class)->handle(
         $request,
         function (Request $request) use (&$discovered): Response {
             expect($request->user())->toBeInstanceOf(Credential::class)
-                ->and(app(McpAccess::class)->allows(AssayCredentialAbility::Usage))->toBeTrue()
-                ->and(app(McpAccess::class)->allows(AssayCredentialAbility::Content))->toBeTrue();
+                ->and(resolve(McpAccess::class)->allows(AssayCredentialAbility::Usage))->toBeTrue()
+                ->and(resolve(McpAccess::class)->allows(AssayCredentialAbility::Content))->toBeTrue();
             McpDelegatedTools::assertConforms(AssayMcpServer::class);
             $discovered = McpDelegatedTools::discover(AssayMcpServer::class);
 

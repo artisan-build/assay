@@ -38,7 +38,7 @@ abstract class AssayTool extends Tool
 
     protected function authorize(): ActingPrincipal
     {
-        return app(McpAccess::class)->authorize($this->ability());
+        return resolve(McpAccess::class)->authorize($this->ability());
     }
 
     /**

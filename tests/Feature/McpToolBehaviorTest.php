@@ -304,7 +304,7 @@ it('denies every handle before validation query or effect when its Assay ability
         } catch (AuthorizationException $exception) {
             expect($exception->getMessage())->toContain('not authorized')
                 ->and(count($queries))->toBe($before)
-                ->and(app(ExceptionHandler::class)->render($request, $exception)->getStatusCode())->toBe(403);
+                ->and(resolve(ExceptionHandler::class)->render($request, $exception)->getStatusCode())->toBe(403);
         }
     };
 
@@ -535,9 +535,9 @@ it('runs delete subject as a single-use argument and credential-bound two-phase 
         'wrong credential' => [$second, [...$arguments, 'confirm' => $confirmation]],
         'malformed' => [$first, [...$arguments, 'confirm' => 'malformed-confirmation']],
         'forged' => [$first, [...$arguments, 'confirm' => $forged]],
-    ] as $case => [$credential, $attempt]) {
+    ] as [$credential, $attempt]) {
         $response = mcp8Call('/mcp/destructive', $credential, 'delete_subject', $attempt);
-        expect($response->status(), $case)->toBe(400);
+        expect($response->status())->toBe(400);
         $response->assertJsonPath('error.code', TwoPhaseCallTool::REFUSAL_CODE);
         expect(DB::table('assay_erasure_records')->count())->toBe(0)
             ->and(DB::table('assay_dataset_items')->count())->toBe(1);

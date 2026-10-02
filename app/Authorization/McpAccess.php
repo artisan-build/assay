@@ -42,7 +42,7 @@ final readonly class McpAccess
     /** @return array{principal: ActingPrincipal, decision: EffectiveAccess} */
     private function resolve(): array
     {
-        $request = app('request');
+        $request = resolve('request');
 
         if (! $request instanceof Request) {
             return $this->nobody();
