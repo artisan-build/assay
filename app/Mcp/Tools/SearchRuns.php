@@ -6,6 +6,8 @@ namespace App\Mcp\Tools;
 
 use App\Authorization\AssayCredentialAbility;
 use App\Services\McpRunData;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -20,6 +22,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 #[ToolEffect(Effect::Read)]
 final class SearchRuns extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'search_runs';
 
     protected string $description = 'Search raw customer content within one app and export matching run metadata to the MCP client and onward to its model provider, transcript, and logs.';

@@ -32,11 +32,12 @@ use Symfony\Component\HttpFoundation\Response;
 uses(WithCredentials::class);
 
 beforeEach(function (): void {
+    config()->set('built-for-cloud.console.audience', 'https://assay.test');
     config()->set('built-for-cloud.mcp.two_phase.cache_store', 'database');
     config()->set('assay.erasure.journal_disk', 'erasure-journal');
     config()->set('assay.erasure.journal_prefix', 'journal');
     config()->set('assay.erasure.active_key_version', 'v1');
-    config()->set('assay.erasure.keys', ['v1' => 'MCP-ERASURE-KEY-CANARY-32-BYTES']);
+    config()->set('assay.erasure.keys', ['v1' => 'MCP-ERASURE-KEY-CANARY-AT-LEAST-32-BYTES']);
     Storage::fake('erasure-journal');
 });
 

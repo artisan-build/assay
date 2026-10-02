@@ -6,6 +6,8 @@ namespace App\Mcp\Tools;
 
 use App\Authorization\AssayCredentialAbility;
 use App\Services\UsageDashboard;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -20,6 +22,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 #[ToolEffect(Effect::Read)]
 final class ReliabilitySummary extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'reliability_summary';
 
     protected string $description = 'Return bounded reliability metadata only. Never returns customer bodies, messages, tool arguments/results, notes, or exception messages.';

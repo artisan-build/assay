@@ -7,6 +7,8 @@ namespace App\Mcp\Tools;
 use App\Authorization\AssayCredentialAbility;
 use App\Enums\UsageMetric;
 use App\Services\UsageDashboard;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -22,6 +24,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 #[ToolEffect(Effect::Read)]
 final class TopRuns extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'top_runs';
 
     protected string $description = 'List bounded run metadata ordered by observed usage. Never returns messages, arguments, results, bodies, notes, or exception messages.';

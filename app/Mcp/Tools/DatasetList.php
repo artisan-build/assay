@@ -6,6 +6,8 @@ namespace App\Mcp\Tools;
 
 use App\Authorization\AssayCredentialAbility;
 use App\Services\DatasetManager;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -20,6 +22,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 #[ToolEffect(Effect::Read)]
 final class DatasetList extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'dataset_list';
 
     protected string $description = 'List bounded customer-defined dataset names and counts. This exports customer data to the MCP client and onward.';

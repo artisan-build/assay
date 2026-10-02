@@ -7,7 +7,6 @@ namespace App\Mcp\Tools;
 use App\Authorization\AssayCredentialAbility;
 use App\Authorization\McpAccess;
 use ArtisanBuild\BuiltForCloud\Console\ActingPrincipal;
-use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\RespectsEffectCeiling;
 use Illuminate\Validation\ValidationException;
 use Laravel\Mcp\Request;
@@ -19,9 +18,6 @@ use Throwable;
 
 abstract class AssayTool extends Tool
 {
-    use AdvertisesToolEffect {
-        toArray as private advertisedArray;
-    }
     use RespectsEffectCeiling;
 
     abstract protected function ability(): AssayCredentialAbility;
@@ -34,7 +30,7 @@ abstract class AssayTool extends Tool
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        $tool = $this->advertisedArray();
+        $tool = parent::toArray();
         $tool['inputSchema']['additionalProperties'] = false;
 
         return $tool;

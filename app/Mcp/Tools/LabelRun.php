@@ -6,6 +6,8 @@ namespace App\Mcp\Tools;
 
 use App\Authorization\AssayCredentialAbility;
 use App\Services\RunCuration;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -20,6 +22,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsIdempotent;
 #[ToolEffect(Effect::Write)]
 final class LabelRun extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'label_run';
 
     protected string $description = 'Replace a run label set while preserving its rating and note. Labels are raw customer-authored data exported to the MCP client and onward.';

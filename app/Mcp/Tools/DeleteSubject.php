@@ -7,6 +7,8 @@ namespace App\Mcp\Tools;
 use App\Authorization\AssayCredentialAbility;
 use App\Services\McpRunData;
 use App\Services\SubjectErasure;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -23,6 +25,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsDestructive;
 #[TwoPhase]
 final class DeleteSubject extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'delete_subject';
 
     protected string $description = 'Preview, then erase one app-scoped subject from live content stores while leaving usage totals pseudonymised and unchanged. Subject data is exported to the MCP client and onward.';

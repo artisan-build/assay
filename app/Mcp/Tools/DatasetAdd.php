@@ -6,6 +6,8 @@ namespace App\Mcp\Tools;
 
 use App\Authorization\AssayCredentialAbility;
 use App\Services\DatasetManager;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolClassification;
+use ArtisanBuild\BuiltForCloud\Mcp\AdvertisesToolEffect;
 use ArtisanBuild\BuiltForCloud\Mcp\Classification;
 use ArtisanBuild\BuiltForCloud\Mcp\Effect;
 use ArtisanBuild\BuiltForCloud\Mcp\ToolClassification;
@@ -20,6 +22,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsIdempotent;
 #[ToolEffect(Effect::Write)]
 final class DatasetAdd extends AssayTool
 {
+    use AdvertisesToolClassification, AdvertisesToolEffect;
+
     protected string $name = 'dataset_add';
 
     protected string $description = 'Add an immutable run snapshot to a dataset. This exports raw customer data to the MCP client and onward to its model provider, transcript, and logs.';
