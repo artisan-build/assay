@@ -14,7 +14,7 @@ final readonly class RetentionPruner
 {
     public function __construct(private ContentStoreRegistry $stores) {}
 
-    /** @return array{content_rows_deleted: int, usage_runs_deleted: int, usage_records_deleted: int, envelopes_deleted: int} */
+    /** @return array{content_rows_deleted: int, dataset_items_deleted: int, usage_runs_deleted: int, usage_records_deleted: int, envelopes_deleted: int} */
     public function prune(?CarbonImmutable $asOf = null, ?int $limit = null): array
     {
         $asOf ??= $this->databaseNow();
@@ -29,23 +29,55 @@ final readonly class RetentionPruner
         $contentCutoff = $asOf->subDays($contentDays);
         $usageCutoff = $asOf->subDays($usageDays);
         $contentDeleted = 0;
+        $datasetItemsDeleted = 0;
 
         foreach ($this->stores->stores() as $store) {
-            $contentDeleted += $this->pruneStore($store, $contentCutoff, $limit);
+            $deleted = $this->pruneStore($store, $store->retention === 'dataset' ? $asOf : $contentCutoff, $limit);
+            $contentDeleted += $deleted;
+
+            if ($store->retention === 'dataset') {
+                $datasetItemsDeleted += $deleted;
+            }
         }
 
         $runsDeleted = 0;
+        $liveAncestryGuard = <<<'SQL'
+            NOT EXISTS (
+                WITH RECURSIVE live_ancestry AS (
+                    SELECT source.id, source.app_id, source.parent_run_id
+                    FROM assay_dataset_items AS item
+                    INNER JOIN assay_runs AS source
+                        ON source.id = item.source_run_id
+                        AND source.app_id = item.app_id
+                    WHERE item.expires_at IS NULL OR item.expires_at > ?
+                    UNION
+                    SELECT parent.id, parent.app_id, parent.parent_run_id
+                    FROM assay_runs AS parent
+                    INNER JOIN live_ancestry AS child
+                        ON child.parent_run_id = parent.id
+                        AND child.app_id = parent.app_id
+                )
+                SELECT 1
+                FROM live_ancestry AS pinned
+                WHERE pinned.id = run.id AND pinned.app_id = run.app_id
+            )
+            SQL;
+        $asOfTimestamp = $asOf->format('Y-m-d H:i:s.uP');
 
         do {
-            $runIds = DB::table('assay_runs')
-                ->whereRaw('COALESCE(ended_at, started_at, earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
-                ->orderByRaw('COALESCE(ended_at, started_at, earliest_received_at)')
-                ->orderBy('id')
+            $runIds = DB::table('assay_runs as run')
+                ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$usageCutoff->format('Y-m-d H:i:s.uP')])
+                ->whereRaw($liveAncestryGuard, [$asOfTimestamp])
+                ->orderByRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at)')
+                ->orderBy('run.id')
                 ->limit($limit)
-                ->pluck('id');
+                ->pluck('run.id');
 
             if ($runIds->isNotEmpty()) {
-                $runsDeleted += DB::table('assay_runs')->whereIn('id', $runIds)->delete();
+                $runsDeleted += DB::table('assay_runs as run')
+                    ->whereIn('run.id', $runIds)
+                    ->whereRaw($liveAncestryGuard, [$asOfTimestamp])
+                    ->delete();
             }
         } while ($runIds->isNotEmpty());
 
@@ -79,6 +111,7 @@ final readonly class RetentionPruner
 
         return [
             'content_rows_deleted' => $contentDeleted,
+            'dataset_items_deleted' => $datasetItemsDeleted,
             'usage_runs_deleted' => $runsDeleted,
             'usage_records_deleted' => $recordsDeleted,
             'envelopes_deleted' => $envelopesDeleted,
@@ -99,8 +132,14 @@ final readonly class RetentionPruner
                     ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
                     ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
                     ->orderBy('content.id')->limit($limit)->pluck('content.id'),
+                'run_flag' => DB::table($store->table.' as content')
+                    ->join('assay_runs as run', 'run.id', '=', 'content.run_id')
+                    ->whereRaw('COALESCE(run.ended_at, run.started_at, run.earliest_received_at) <= ?', [$cutoff->format('Y-m-d H:i:s.uP')])
+                    ->orderBy('content.run_id')->limit($limit)->pluck('content.run_id'),
                 'timestamp' => DB::table($store->table)->where('occurred_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
                     ->oldest('occurred_at')->orderBy('id')->limit($limit)->pluck('id'),
+                'dataset' => DB::table($store->table)->whereNotNull('expires_at')->where('expires_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
+                    ->oldest('expires_at')->orderBy('id')->limit($limit)->pluck('id'),
                 'unix_timestamp' => DB::table($store->table)->where('created_at', '<=', $cutoff->timestamp)->oldest()->orderBy('id')->limit($limit)->pluck('id'),
                 'failed_timestamp' => DB::table($store->table)->where('failed_at', '<=', $cutoff->format('Y-m-d H:i:s.uP'))
                     ->oldest('failed_at')->orderBy('id')->limit($limit)->pluck('id'),
@@ -108,7 +147,8 @@ final readonly class RetentionPruner
             };
 
             if ($ids->isNotEmpty()) {
-                $deleted += DB::table($store->table)->whereIn('id', $ids)->delete();
+                $key = $store->retention === 'run_flag' ? 'run_id' : 'id';
+                $deleted += DB::table($store->table)->whereIn($key, $ids)->delete();
             }
         } while ($ids->isNotEmpty());
 

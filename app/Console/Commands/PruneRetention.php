@@ -39,7 +39,7 @@ final class PruneRetention extends Command
         }
 
         $this->components->info(
-            "{$result['content_rows_deleted']} content rows, {$result['usage_runs_deleted']} runs, "
+            "{$result['content_rows_deleted']} content rows ({$result['dataset_items_deleted']} dataset items), {$result['usage_runs_deleted']} runs, "
             ."{$result['usage_records_deleted']} standalone records, and {$result['envelopes_deleted']} envelopes pruned.",
         );
 

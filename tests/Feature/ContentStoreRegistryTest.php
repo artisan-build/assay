@@ -34,6 +34,8 @@ it('classifies every text and json column in app-owned content-capable schemas',
             'assay_record_content' => ['content'],
             'assay_messages' => ['body'],
             'assay_pending_content_attaches' => ['content'],
+            'assay_run_flags' => ['labels', 'note'],
+            'assay_dataset_items' => ['snapshot'],
             'jobs' => ['payload'],
             'failed_jobs' => ['payload', 'exception'],
         ]);
