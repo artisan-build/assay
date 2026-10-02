@@ -393,6 +393,26 @@ it('keeps usage-only responses link-free and denies direct run-tree access acros
     $this->actingAs($owner)->getJson(route('assay.runs.tree', ['run' => $run]))
         ->assertOk()
         ->assertJsonPath('rows.0.run_id', $run);
+
+    $usageCredential = $this->mintCredential([
+        'purpose' => CredentialPurpose::Mcp,
+        'subject_type' => SubjectType::ExternalConsumer,
+        'subject_ref' => 'usage-projection-reader',
+        'abilities' => ['assay.usage'],
+    ]);
+    $this->withHeader('Authorization', $usageCredential->bearerHeader())->get(route('assay.dashboard'))
+        ->assertOk()
+        ->assertDontSee(route('assay.runs.tree', ['run' => $run], false));
+    $this->withHeader('Authorization', $usageCredential->bearerHeader())->getJson(route('assay.dashboard.top-runs'))
+        ->assertOk()
+        ->assertJsonMissing(['run_tree_id' => $run]);
+    $this->withHeader('Authorization', $usageCredential->bearerHeader())->get(route('assay.dashboard.top-runs.csv'))
+        ->assertOk()
+        ->assertDontSee('run_tree_id')
+        ->assertDontSee(route('assay.runs.tree', ['run' => $run], false));
+    $this->withHeader('Authorization', $usageCredential->bearerHeader())
+        ->getJson(route('assay.runs.tree', ['run' => $run]))
+        ->assertForbidden();
 });
 
 it('renders structural dashboard and access sections without reasons secrets content or money vocabulary', function (): void {
@@ -427,8 +447,7 @@ it('renders structural dashboard and access sections without reasons secrets con
         ->and($body)->not->toContain('prompt', 'response body', 'tool arguments', 'credential value');
 });
 
-it('covers the PR5 people surface matrix while usage/content credentials and person-bound caps remain deferred to PR7b', function (): void {
-    // Usage-scoped credentials, content-scoped credentials, and person-bound credential caps are PR7b, not PR5.
+it('covers the people rows of the authorization surface matrix', function (): void {
     $owner = createAssayUser('Surface Matrix Owner', UserRole::Owner);
     $admin = createAssayUser('Surface Matrix Admin', UserRole::Admin);
     $member = createAssayUser('Surface Matrix Member', UserRole::Member);

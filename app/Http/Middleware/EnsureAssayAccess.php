@@ -31,25 +31,23 @@ final readonly class EnsureAssayAccess
     /** @param Closure(Request): Response $next */
     public function handle(Request $request, Closure $next, string $ability): Response
     {
-        $authorization = $request->header('Authorization');
-        $hasBearer = is_string($authorization)
-            && preg_match('/^\s*Bearer(?:\s|$)/i', $authorization) === 1;
-
-        if ($hasBearer) {
+        if (self::hasBearerHeader($request)) {
             $credential = $this->bearer->credential($request);
 
-            if ($credential instanceof Credential) {
-                abort(403);
+            if (! $credential instanceof Credential) {
+                abort(401);
             }
 
-            abort(401);
+            $principal = ActingPrincipal::local('bfc', $credential);
+            $decision = $this->policy->projectCredential($credential);
+        } else {
+            $principal = $this->principals->resolve();
+            $user = ! $principal->delegated && $principal->principal instanceof User
+                ? $principal->principal
+                : null;
+            $decision = $this->policy->decide($principal, $user);
         }
 
-        $principal = $this->principals->resolve();
-        $user = ! $principal->delegated && $principal->principal instanceof User
-            ? $principal->principal
-            : null;
-        $decision = $this->policy->decide($principal, $user);
         $allowed = match ($ability) {
             'usage' => $decision->usage,
             'content' => $decision->content,
@@ -64,6 +62,14 @@ final readonly class EnsureAssayAccess
         $request->attributes->set(self::DECISION, $decision);
 
         return $next($request);
+    }
+
+    public static function hasBearerHeader(Request $request): bool
+    {
+        $authorization = $request->header('Authorization');
+
+        return is_string($authorization)
+            && preg_match('/^\s*Bearer(?:\s|$)/i', $authorization) === 1;
     }
 
     public static function principal(Request $request): ActingPrincipal

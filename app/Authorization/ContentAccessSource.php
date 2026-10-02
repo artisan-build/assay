@@ -7,6 +7,7 @@ namespace App\Authorization;
 enum ContentAccessSource: string
 {
     case NotAdmitted = 'not_admitted';
+    case Credential = 'credential';
     case Owner = 'owner';
     case RoleDefault = 'role_default';
     case Override = 'override';
