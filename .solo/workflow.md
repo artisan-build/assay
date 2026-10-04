@@ -39,9 +39,9 @@ handoff.
 ## CI
 
 - status: defined; the coordinator verifies it on the pull request.
-- exact required contexts: `ci (8.4)`, `ci (8.5)`, and `quality`.
+- exact required contexts: `ci (8.5)` and `quality`.
 - `.github/workflows/tests.yml`: root PHPStan/Larastan, root Pest, both package static-analysis and
-  Pest suites, and Composer audits on PHP 8.4 and 8.5 against PostgreSQL 16.
+  Pest suites, and Composer audits on PHP 8.5 against PostgreSQL 16.
 - `.github/workflows/lint.yml`: root and package Pint checks on PHP 8.5.
 - both workflows target pushes and pull requests to `main`.
 
