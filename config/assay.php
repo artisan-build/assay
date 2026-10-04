@@ -40,7 +40,7 @@ return [
         'active_key_version' => $activeErasureVersion,
         'keys' => $erasureKeys,
         'batch_size' => (int) env('ASSAY_ERASURE_BATCH_SIZE', 1_000),
-        'journal_disk' => env('ASSAY_ERASURE_JOURNAL_DISK', 'local'),
+        'journal_disk' => env('ASSAY_ERASURE_JOURNAL_DISK', env('FILESYSTEM_DISK', 'local')),
         'journal_prefix' => env('ASSAY_ERASURE_JOURNAL_PREFIX', 'assay/erasures'),
     ],
 ];
