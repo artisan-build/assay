@@ -34,7 +34,8 @@ php artisan migrate --force
 
 Configure the normal Laravel database, cache, queue, mail, filesystem, and application URL settings. Set a
 dedicated `ASSAY_ERASURE_KEY` containing at least 32 random bytes, either raw or encoded with the `base64:`
-prefix; do not reuse `APP_KEY`. Configure the erasure journal disk and backup policy before accepting
+prefix; do not reuse `APP_KEY`. The erasure journal is written to the application's default filesystem
+disk, so no extra storage configuration is required; set a backup policy for that disk before accepting
 traffic. Run a queue worker and `php artisan schedule:work`, or invoke Laravel's scheduler every minute.
 
 Laravel Cloud supplies environment values for attached resources. Do not add application environment
