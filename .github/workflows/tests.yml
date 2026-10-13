@@ -77,3 +77,76 @@ jobs:
         run: |
           composer audit
           composer packages:audit
+
+  lowest-dependencies:
+    name: lowest dependencies (${{ matrix.laravel }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - laravel: L12
+            illuminate: ^12.62
+            testbench: ^10.6
+            pest: ^3.0
+          - laravel: L13
+            illuminate: ^13.0
+            testbench: ^11.0
+            pest: ^4.7
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: root
+          POSTGRES_DB: assay_app_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+
+      - name: Pin dependency lane
+        working-directory: packages/assay-client
+        run: |
+          # Historical floor versions can carry advisories; the current dependency audit runs in ci.
+          composer config policy.advisories.block false
+          composer require --no-update \
+            "illuminate/cache:${{ matrix.illuminate }}" \
+            "illuminate/contracts:${{ matrix.illuminate }}" \
+            "illuminate/http:${{ matrix.illuminate }}" \
+            "illuminate/json-schema:${{ matrix.illuminate }}" \
+            "illuminate/queue:${{ matrix.illuminate }}" \
+            "illuminate/support:${{ matrix.illuminate }}"
+          composer require --dev --no-update \
+            "orchestra/testbench:${{ matrix.testbench }}" \
+            "pestphp/pest:${{ matrix.pest }}"
+
+      - name: Install lowest dependencies
+        working-directory: packages/assay-client
+        run: composer update --prefer-lowest --prefer-stable --with-all-dependencies --ignore-platform-req=php+
+
+      - name: Show resolved Laravel versions
+        working-directory: packages/assay-client
+        run: |
+          composer show laravel/framework
+          composer show laravel/ai
+
+      - name: Run client package tests
+        working-directory: packages/assay-client
+        run: composer test
