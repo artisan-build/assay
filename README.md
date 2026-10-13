@@ -16,9 +16,8 @@ does not ship model prices, reconcile invoices, replay or score runs, or provide
 - `packages/assay-client` is the Laravel package installed in reporting applications.
 - `docs/dataset-export-v1.md` defines the versioned dataset export format.
 
-The packages are Composer path repositories in this monorepo. Their split repositories are a release
-prerequisite, so the installation instructions below do not claim that public package mirrors already
-exist.
+The packages use Composer path repositories for development in this monorepo. Releases are published from
+their split repositories to Packagist.
 
 ## Server Setup
 
@@ -48,13 +47,10 @@ released package views and assets without host copies or overrides.
 
 ## Reporting Applications
 
-Until the split package repositories are released, install the client from a local Assay checkout by adding
-both package directories as Composer path repositories in the reporting application:
+Install the client from Packagist in the reporting application:
 
 ```bash
-composer config repositories.assay-contracts path /absolute/path/to/assay/packages/assay-contracts
-composer config repositories.assay-client path /absolute/path/to/assay/packages/assay-client
-composer require artisan-build/assay-client:^1.0
+composer require artisan-build/assay-client
 php artisan vendor:publish --tag=assay-config
 ```
 
@@ -122,7 +118,7 @@ unfiltered data.
 
 ## Access Model
 
-The three abilities are literal and none implies another:
+The access model has three independent abilities; none implies another.
 
 | Ability | Access |
 |---|---|
