@@ -54,9 +54,9 @@ composer require artisan-build/assay-client
 php artisan vendor:publish --tag=assay-config
 ```
 
-The client requires Laravel 13 and supports `laravel/ai` 1.x. It is source-agnostic internally and binds its
-included `laravel/ai` driver by default. The package is inert when no supported capture source is installed
-or when either transport setting is absent.
+The client supports Laravel 12.62+ and 13 and requires `laravel/ai` 1.x. It is source-agnostic internally
+and binds its included `laravel/ai` driver by default. The package is inert when either transport setting is
+absent.
 
 In Assay, an admitted Owner, Admin, or Member can open `/settings/credentials/installation` and issue the
 displayed `assay.ingest` credential for one reporting installation. Save the bearer secret when shown; it
