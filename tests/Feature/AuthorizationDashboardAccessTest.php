@@ -258,6 +258,32 @@ it('persists overrides through role and admission changes and deletes defaults a
     expect(json_encode($events->map->getAttributes()->all(), JSON_THROW_ON_ERROR))->not->toContain('bounded reason');
 });
 
+it('keeps redundant identical override sets inert and audit silent while a reason change records', function (): void {
+    $owner = createAssayUser('Redundant Owner', UserRole::Owner);
+    $member = createAssayUser('Redundant Member', UserRole::Member);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'first',
+    ])->assertOk()->assertJson(['changed' => true]);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'first',
+    ])->assertOk()->assertJson(['changed' => false]);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'second',
+    ])->assertOk()->assertJson(['changed' => true]);
+
+    expect(AppActionEvent::query()->count())->toBe(2)
+        ->and(AppActionEvent::query()->oldest('occurred_at')->pluck('action')->all())->toBe([
+            AppAction::ContentAccessOverrideSet->value,
+            AppAction::ContentAccessOverrideSet->value,
+        ]);
+});
+
 it('rolls back the override when the app-action recorder throws', function (): void {
     $owner = createAssayUser('Rollback Owner', UserRole::Owner);
     $member = createAssayUser('Rollback Member', UserRole::Member);
