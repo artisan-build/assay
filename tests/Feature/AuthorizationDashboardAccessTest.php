@@ -171,6 +171,28 @@ it('projects explicit usage and content abilities for defaults, overrides, absen
     expect([$delegatedAccess->usage, $delegatedAccess->content])->toBe([true, true]);
 });
 
+it('refuses an offboarded delegated actor instead of trusting its role claim', function (): void {
+    $delegated = DelegatedActor::query()->create([
+        'identity_hash' => DelegatedActor::identityHash('issuer', 'offboarded'),
+        'issuer' => 'issuer',
+        'subject' => 'offboarded',
+        'last_handoff_display_name' => 'Offboarded',
+        'last_handoff_role' => ConsoleRole::Admin,
+    ]);
+    $delegated->forceFill(['deactivated_at' => now()])->save();
+
+    $access = resolve(AssayAccessPolicy::class)->decide(
+        ActingPrincipal::delegatedRequest(
+            $delegated,
+            new DelegatedClaims('Offboarded', ConsoleRole::Admin, 'Agency'),
+        ),
+        null,
+    );
+
+    expect([$access->usage, $access->content])->toBe([false, false])
+        ->and($access->source)->toBe(ContentAccessSource::NotAdmitted);
+});
+
 it('enforces owner admin member management authority and leaves forbidden writes inert', function (): void {
     $owner = createAssayUser('Matrix Owner', UserRole::Owner);
     $admin = createAssayUser('Matrix Admin', UserRole::Admin);
