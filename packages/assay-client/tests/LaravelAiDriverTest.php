@@ -1451,11 +1451,9 @@ it('projects every supported non-agent full-content shape without media vectors 
     }
     $buffered->flush();
 
-    expect($dispatcher->dispatched[0]['json'])->not->toContain(
-        $excluded,
-        base64_encode($excluded),
-        'EXCLUDED-CREDENTIAL',
-        'EXCLUDED-RERANK-CREDENTIAL',
-        'EXCLUDED-CLASSIFY-CREDENTIAL',
-    );
+    expect($dispatcher->dispatched[0]['json'])->not->toContain($excluded)
+        ->not->toContain(base64_encode($excluded))
+        ->not->toContain('EXCLUDED-CREDENTIAL')
+        ->not->toContain('EXCLUDED-RERANK-CREDENTIAL')
+        ->not->toContain('EXCLUDED-CLASSIFY-CREDENTIAL');
 });
