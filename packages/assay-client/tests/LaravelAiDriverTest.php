@@ -1348,7 +1348,8 @@ it('projects full agent content while excluding replay provider attachment and s
         ->and($tools[1]->content?->toArray())->toBe(['result' => ['ok' => true]])
         ->and($tools[2]->content?->toArray())->toBe(['exception_message' => 'allowed exception'])
         ->and($runEnd->content?->toArray())->toBe(['exception_message' => 'allowed run exception'])
-        ->and(serialize($collected->records))->not->toContain($excluded, 'provider-option-canary');
+        ->and(serialize($collected->records))->not->toContain($excluded)
+        ->and(serialize($collected->records))->not->toContain('provider-option-canary');
 
     $dispatcher = new CollectingDispatcher;
     $buffered = new BufferedRecorder(
@@ -1369,7 +1370,7 @@ it('projects full agent content while excluding replay provider attachment and s
     $buffered->flush();
 
     $json = $dispatcher->dispatched[0]['json'];
-    expect($json)->not->toContain($excluded, 'provider-option-canary');
+    expect($json)->not->toContain($excluded)->not->toContain('provider-option-canary');
 
     config()->set('assay.url', 'https://assay.test/ingest');
     config()->set('assay.token', 'test-token');
@@ -1428,7 +1429,9 @@ it('projects every supported non-agent full-content shape without media vectors 
         ->and($ends['transcription']->content?->toArray())->toBe(['text' => 'transcribed text'])
         ->and($ends['reranking']->content?->toArray())->toBe(['results' => [['index' => 1, 'score' => 0.9]]])
         ->and($ends['classification']->content?->toArray())->toBe(['answers' => ['flag' => ['probability' => 0.8]]])
-        ->and(serialize($recorder->records))->not->toContain($excluded, base64_encode($excluded), 'EXCLUDED-CREDENTIAL');
+        ->and(serialize($recorder->records))->not->toContain($excluded)
+        ->and(serialize($recorder->records))->not->toContain(base64_encode($excluded))
+        ->and(serialize($recorder->records))->not->toContain('EXCLUDED-CREDENTIAL');
 
     $dispatcher = new CollectingDispatcher;
     $buffered = new BufferedRecorder(
