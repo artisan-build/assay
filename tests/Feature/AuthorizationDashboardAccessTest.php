@@ -470,7 +470,10 @@ it('renders structural dashboard and access sections without reasons secrets con
     $body = strtolower((string) $dashboard->getContent().$access->getContent());
 
     expect($body)->not->toMatch('/\b(price|cost|currency|budget)\b|[$€]/')
-        ->and($body)->not->toContain('prompt', 'response body', 'tool arguments', 'credential value');
+        ->and($body)->not->toContain('prompt')
+        ->and($body)->not->toContain('response body')
+        ->and($body)->not->toContain('tool arguments')
+        ->and($body)->not->toContain('credential value');
 });
 
 it('covers the people rows of the authorization surface matrix', function (): void {
