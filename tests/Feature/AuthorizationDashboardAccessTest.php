@@ -446,6 +446,11 @@ it('serves HTML override writes with redirects authorization and the bounded rea
         'reason' => str_repeat('r', 501),
     ])->assertSessionHasErrors('reason');
     expect(ContentAccessOverride::query()->whereKey($member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->put(route('assay.access.set', $member), [
+        'access' => 'not-a-real-access',
+    ])->assertSessionHasErrors('access');
+    expect(ContentAccessOverride::query()->count())->toBe(1);
 });
 
 it('renders structural dashboard and access sections without reasons secrets content or money vocabulary', function (): void {
