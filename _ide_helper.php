@@ -11004,6 +11004,16 @@ namespace Illuminate\Support\Facades {
             return $instance->macroCall($method, $parameters);
         }
 
+        /**
+         * @see \ArtisanBuild\BfcClient\BfcClientServiceProvider::boot()
+         * @return \Illuminate\Http\Client\PendingRequest
+         * @static
+         */
+        public static function withClientIdentity()
+        {
+            return \Illuminate\Http\Client\Factory::withClientIdentity();
+        }
+
             }
     /**
      * @see \Illuminate\Image\ImageManager
@@ -25746,6 +25756,24 @@ namespace Illuminate\Routing {
     /**
      */
     class SortedMiddleware extends \Illuminate\Support\Collection {
+            }
+    }
+
+namespace Illuminate\Http\Client {
+    /**
+     * @mixin \Illuminate\Http\Client\PendingRequest
+     */
+    class Factory {
+        /**
+         * @see \ArtisanBuild\BfcClient\BfcClientServiceProvider::boot()
+         * @return \Illuminate\Http\Client\PendingRequest
+         * @static
+         */
+        public static function withClientIdentity()
+        {
+            return \Illuminate\Http\Client\Factory::withClientIdentity();
+        }
+
             }
     }
 
