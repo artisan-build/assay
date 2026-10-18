@@ -415,6 +415,39 @@ it('keeps usage-only responses link-free and denies direct run-tree access acros
         ->assertForbidden();
 });
 
+it('serves HTML override writes with redirects authorization and the bounded reason', function (): void {
+    $owner = createAssayUser('Form Owner', UserRole::Owner);
+    $member = createAssayUser('Form Member', UserRole::Member);
+    $grantedMember = createAssayUser('Form Granted Member', UserRole::Member);
+
+    ContentAccessOverride::query()->create([
+        'actor_id' => (string) $grantedMember->getKey(),
+        'access' => ContentAccess::Granted,
+        'set_by_actor_id' => (string) $owner->getKey(),
+        'set_at' => now(),
+    ]);
+
+    $this->actingAs($grantedMember)->put(route('assay.access.set', $member), ['access' => 'granted'])
+        ->assertForbidden();
+    expect(ContentAccessOverride::query()->where('actor_id', (string) $member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->put(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => str_repeat('r', 500),
+    ])->assertRedirect(route('assay.access.index'));
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->value('access'))->toBe(ContentAccess::Granted);
+
+    $this->actingAs($owner)->delete(route('assay.access.reset', $member))
+        ->assertRedirect(route('assay.access.index'));
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->from(route('assay.access.index'))->put(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => str_repeat('r', 501),
+    ])->assertSessionHasErrors('reason');
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->exists())->toBeFalse();
+});
+
 it('renders structural dashboard and access sections without reasons secrets content or money vocabulary', function (): void {
     $owner = createAssayUser('Surface Owner', UserRole::Owner);
     $member = createAssayUser('Surface Member', UserRole::Member);
@@ -444,7 +477,10 @@ it('renders structural dashboard and access sections without reasons secrets con
     $body = strtolower((string) $dashboard->getContent().$access->getContent());
 
     expect($body)->not->toMatch('/\b(price|cost|currency|budget)\b|[$€]/')
-        ->and($body)->not->toContain('prompt', 'response body', 'tool arguments', 'credential value');
+        ->and($body)->not->toContain('prompt')
+        ->and($body)->not->toContain('response body')
+        ->and($body)->not->toContain('tool arguments')
+        ->and($body)->not->toContain('credential value');
 });
 
 it('covers the people rows of the authorization surface matrix', function (): void {
