@@ -30,6 +30,9 @@ use ArtisanBuild\BuiltForCloud\Exceptions\NoActingPrincipal;
 use ArtisanBuild\BuiltForCloud\Http\Middleware\AuthenticateMcp;
 use ArtisanBuild\BuiltForCloud\Mcp\RequestEffectCeiling;
 use ArtisanBuild\BuiltForCloud\SubjectType;
+use ArtisanBuild\BuiltForCloud\Testing\ConsumerConformance;
+use ArtisanBuild\BuiltForCloud\Testing\ContractAssertions;
+use ArtisanBuild\BuiltForCloud\Testing\FleetConformance;
 use ArtisanBuild\BuiltForCloud\Testing\McpDelegatedEnforcement;
 use ArtisanBuild\BuiltForCloud\Testing\McpDelegatedTools;
 use ArtisanBuild\BuiltForCloud\Testing\McpProductAdmission;
@@ -47,7 +50,7 @@ use Laravel\Mcp\Server\Tool;
 use Laravel\Mcp\Server\Transport\FakeTransporter;
 use Symfony\Component\HttpFoundation\Response;
 
-uses(WithCredentials::class);
+uses(WithCredentials::class, ContractAssertions::class);
 
 beforeEach(function (): void {
     config()->set('built-for-cloud.console.audience', 'https://assay.test');
@@ -95,6 +98,85 @@ function assayMcpToolClasses(): array
         DatasetList::class,
         DatasetExport::class,
         DeleteSubject::class,
+    ];
+}
+
+/** @param list<string> $mcpTools
+ * @return array<string, list<string>>
+ */
+function assayFleetConformanceExpected(array $mcpTools): array
+{
+    $sort = static function (array $members): array {
+        sort($members);
+
+        return $members;
+    };
+
+    return [
+        'runtime.meta' => [],
+        'runtime.auth_schema' => [],
+        'runtime.credential_listing' => [],
+        'runtime.transport_parity' => [],
+        'thin_host' => [],
+        'credential_paths' => $sort([
+            'path:Basic|ArtisanBuild\\BuiltForCloud\\Auth\\BasicAuthenticator',
+            'path:Bearer|ArtisanBuild\\BuiltForCloud\\Auth\\BearerAuthenticator',
+            'path:HMAC|Http\\Middleware\\VerifyHmacSignature+Hmac\\HmacVerifier',
+            'path:MCP|Http\\Middleware\\AuthenticateMcp:store-bearer+v4.public',
+            'path:asymmetric|Actions\\MintCredential::mintEnrollment+CompleteAsymmetricEnrollment+AsymmetricVerificationKeys',
+            'path:device|Http\\Controllers\\DeviceAuthorizations+Actions\\StartDeviceAuthorization/DecideDeviceAuthorization/PollDeviceAuthorization+BoundBearerCredentialAuthenticator+ContainCredentialAuthorizations',
+            'path:enrollment|OnboardingToken+POST:/bfc/claim,/bfc/onboarding/issue,/exchange,/verify',
+            'path:loopback|Http\\Controllers\\LoopbackAuthorizations+Actions\\StartLoopbackAuthorization/DecideLoopbackAuthorization/ExchangeLoopbackAuthorization+BoundBearerCredentialAuthenticator+ContainCredentialAuthorizations',
+            'path:system|SubjectType::Operator/Application/Installation+AuditActorType::CliOperator',
+        ]),
+        'credential_writers' => $sort([
+            'ArtisanBuild\\BuiltForCloud\\Actions\\MintCredential::mintEnrollment',
+            'ArtisanBuild\\BuiltForCloud\\Actions\\MintCredential::mintSecretBearing',
+            'ArtisanBuild\\BuiltForCloud\\Actions\\MintCredential::mintSigningKey',
+            'ArtisanBuild\\BuiltForCloud\\Actions\\RotateCredential::replaceWithEnrollment',
+            'ArtisanBuild\\BuiltForCloud\\Actions\\RotateCredential::replaceWithPendingSigningKey',
+            'ArtisanBuild\\BuiltForCloud\\Actions\\RotateCredential::replaceWithSecret',
+            'ArtisanBuild\\BuiltForCloud\\OwnerCredentialMinter::mintFromHash',
+            'ArtisanBuild\\BuiltForCloud\\UnifiedStoreCredentialMinter::mint',
+        ]),
+        'legacy_removal' => [],
+        'system_authority' => $sort([
+            'ArtisanBuild\\BuiltForCloud\\Commands\\ConsoleReKeyCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\ConsoleRetireKeyCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CreateAdminCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CredentialActivateCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CredentialListCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CredentialMintCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CredentialRevokeCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\CredentialRotateCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\FreshCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\HmacRewrapCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\InstallOperatorCredentialCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\OutboxDrainCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\OwnershipMintClaimCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\OwnershipRemintOwnerTokenCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\PruneCredentialAuthorizationsCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\SigningRootEnsureCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\SigningRootProvisionCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\SubjectOffboardCommand',
+            'ArtisanBuild\\BuiltForCloud\\Commands\\WarnExpiringCredentialsCommand',
+            'ArtisanBuild\\BuiltForCloud\\Jobs\\DeliverOwnershipWebhook',
+            'Closure@package/src/SystemAuthoritySchedule.php:27',
+        ]),
+        'no_signing_path' => [],
+        'ui_config_reads' => $sort([
+            'ArtisanBuild\\BuiltForCloud\\AppPurposeRegistry|built-for-cloud.credentials.app_purposes|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\ManageTransitions|built-for-cloud.ui.managed_transitions|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\UiHome|built-for-cloud.ui.installation_credentials|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\UiHome|built-for-cloud.ui.managed_transitions|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\UiHome|built-for-cloud.ui.member_management|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\UiHome|built-for-cloud.ui.personal_credentials|1',
+            'ArtisanBuild\\BuiltForCloud\\Http\\Controllers\\UiHome|built-for-cloud.ui.session_management|1',
+            'ArtisanBuild\\BuiltForCloud\\LandingManifest|built-for-cloud.manifest|1',
+            'ArtisanBuild\\BuiltForCloud\\Mcp\\TwoPhaseConfirmationStore|built-for-cloud.manifest.slug|1',
+            'ArtisanBuild\\BuiltForCloud\\UiCredentialPurposes|built-for-cloud.ui.credential_purposes|1',
+        ]),
+        'mcp_delegated' => $sort($mcpTools),
     ];
 }
 
@@ -193,9 +275,11 @@ it('conforms all thirteen eligible tools and snapshots their wire metadata', fun
 });
 
 it('honors the canonical delegated principal across every registered tool', function (): void {
+    $mcpTools = assayMcpToolClasses();
+
     McpDelegatedEnforcement::assertHonors(
         AssayMcpServer::class,
-        assayMcpToolClasses(),
+        $mcpTools,
         ConsoleRole::Admin,
         arguments: [
             FlagRun::class => [
@@ -208,6 +292,67 @@ it('honors the canonical delegated principal across every registered tool', func
             ],
         ],
     );
+
+    $packageRoot = base_path('vendor/artisan-build/built-for-cloud');
+    $report = (new FleetConformance($this))->inspect(new ConsumerConformance(
+        consumer: 'assay',
+        consumerRoot: base_path(),
+        packageRoot: $packageRoot,
+        sourceRoots: [app_path('Authorization'), app_path('Mcp')],
+        providerFiles: [$packageRoot.'/src/BuiltForCloudServiceProvider.php'],
+        runtimeAssertions: ['auth_schema', 'credential_listing', 'meta', 'transport_parity'],
+        capabilities: ['credentials', 'mcp-delegated', 'tokens'],
+        purposeMappings: ['assay.ingest' => CredentialPurpose::Consumption],
+        mcpServer: AssayMcpServer::class,
+        expected: assayFleetConformanceExpected($mcpTools),
+    ));
+
+    $expectedMcpTools = $mcpTools;
+    sort($expectedMcpTools);
+    $mcp = $report->families['mcp_delegated'];
+    $otherViolations = collect($report->families)
+        ->except('system_authority')
+        ->flatMap(static fn ($family): array => $family->violations)
+        ->all();
+    $scheduledCommands = [
+        'assay:queue:prune-residue',
+        'assay:reconcile-content-attaches',
+        'assay:reconcile-stale-runs',
+        'assay:retention:prune',
+    ];
+    $systemAuthorityViolations = collect($report->families['system_authority']->violations)
+        ->map(static function (string $violation) use ($scheduledCommands): string {
+            foreach (['unexpected:', 'uninspectable-schedule:'] as $prefix) {
+                foreach ($scheduledCommands as $command) {
+                    if (str_starts_with($violation, $prefix)
+                        && str_ends_with($violation, "artisan' ".$command)) {
+                        return $prefix.$command;
+                    }
+                }
+            }
+
+            return $violation;
+        })
+        ->sort()
+        ->values()
+        ->all();
+    $expectedSystemAuthorityViolations = [];
+    foreach ($scheduledCommands as $command) {
+        $expectedSystemAuthorityViolations[] = 'unexpected:'.$command;
+        $expectedSystemAuthorityViolations[] = 'uninspectable-schedule:'.$command;
+    }
+    sort($expectedSystemAuthorityViolations);
+
+    expect($report->passed)->toBeFalse()
+        ->and(array_keys($report->families))->toBe(ConsumerConformance::FAMILIES)
+        ->and($mcp->applicability)->toBe('applicable')
+        ->and($mcp->visited)->toBe(13)
+        ->and($mcp->expected)->toBe($expectedMcpTools)
+        ->and($mcp->discovered)->toBe($expectedMcpTools)
+        ->and($mcp->violations)->toBe([])
+        ->and($otherViolations)->toBe([])
+        ->and($report->families['system_authority']->applicability)->toBe('applicable')
+        ->and($systemAuthorityViolations)->toBe($expectedSystemAuthorityViolations);
 });
 
 it('refuses missing and unsupported MCP principals through the canonical resolver', function (): void {
