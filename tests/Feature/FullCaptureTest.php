@@ -372,6 +372,47 @@ it('rolls back app metadata usage and content when content storage fails', funct
         ->and(DB::table('assay_record_content')->count())->toBe(0);
 });
 
+it('returns run-tree content records in occurred_at order rather than arrival order', function (): void {
+    $owner = fullCaptureUser('Order Owner', UserRole::Owner);
+    ProcessUsageEnvelope::fromContract(
+        'content-order-app',
+        '2026-10-01T18:00:00.000000+00:00',
+        EnvelopeFactory::envelope([
+            EnvelopeFactory::record([
+                'capture' => 'full',
+                'invocation_id' => 'content-order-run',
+                'at' => '2026-10-01T18:00:03.000000+00:00',
+                'content' => ['instructions' => 'ORDER-LATE-CANARY'],
+            ]),
+            EnvelopeFactory::record([
+                'type' => 'step.end',
+                'capture' => 'full',
+                'invocation_id' => 'content-order-run',
+                'step' => 0,
+                'at' => '2026-10-01T18:00:01.000000+00:00',
+                'content' => ['output_text' => 'ORDER-EARLY-CANARY'],
+            ]),
+            EnvelopeFactory::record([
+                'type' => 'run.end',
+                'capture' => 'full',
+                'invocation_id' => 'content-order-run',
+                'outcome' => 'completed',
+                'at' => '2026-10-01T18:00:04.000000+00:00',
+            ]),
+        ]),
+    )->handle(resolve(UsageIngestProcessor::class));
+
+    $runId = (string) DB::table('assay_runs')->where('invocation_id', 'content-order-run')->value('id');
+    $records = $this->actingAs($owner)->getJson(route('assay.runs.tree', $runId))
+        ->assertOk()
+        ->json('rows.0.content_records');
+
+    expect(array_column($records, 'content'))->toBe([
+        ['output_text' => 'ORDER-EARLY-CANARY'],
+        ['instructions' => 'ORDER-LATE-CANARY'],
+    ]);
+});
+
 it('exposes content only to independently authorized people and never through usage surfaces', function (): void {
     $owner = fullCaptureUser('Full Owner', UserRole::Owner);
     $admin = fullCaptureUser('Full Admin', UserRole::Admin);
