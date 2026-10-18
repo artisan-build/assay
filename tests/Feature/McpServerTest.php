@@ -5,15 +5,32 @@ declare(strict_types=1);
 use App\Authorization\AssayCredentialAbility;
 use App\Authorization\McpAccess;
 use App\Mcp\AssayMcpServer;
+use App\Mcp\Tools\DatasetAdd;
+use App\Mcp\Tools\DatasetCreate;
+use App\Mcp\Tools\DatasetExport;
+use App\Mcp\Tools\DatasetList;
+use App\Mcp\Tools\DeleteSubject;
+use App\Mcp\Tools\FlagRun;
+use App\Mcp\Tools\LabelRun;
+use App\Mcp\Tools\ReliabilitySummary;
+use App\Mcp\Tools\RunContent;
+use App\Mcp\Tools\RunTree;
+use App\Mcp\Tools\SearchRuns;
+use App\Mcp\Tools\TopRuns;
+use App\Mcp\Tools\UsageSummary;
+use ArtisanBuild\BuiltForCloud\Console\ActingPrincipalResolver;
 use ArtisanBuild\BuiltForCloud\Console\Assertion;
 use ArtisanBuild\BuiltForCloud\Console\ConsoleRole;
 use ArtisanBuild\BuiltForCloud\Console\DelegatedActor;
 use ArtisanBuild\BuiltForCloud\Console\RequestAssertion;
 use ArtisanBuild\BuiltForCloud\Credential;
 use ArtisanBuild\BuiltForCloud\CredentialPurpose;
+use ArtisanBuild\BuiltForCloud\Exceptions\DelegatedPrincipalUnsupported;
+use ArtisanBuild\BuiltForCloud\Exceptions\NoActingPrincipal;
 use ArtisanBuild\BuiltForCloud\Http\Middleware\AuthenticateMcp;
 use ArtisanBuild\BuiltForCloud\Mcp\RequestEffectCeiling;
 use ArtisanBuild\BuiltForCloud\SubjectType;
+use ArtisanBuild\BuiltForCloud\Testing\McpDelegatedEnforcement;
 use ArtisanBuild\BuiltForCloud\Testing\McpDelegatedTools;
 use ArtisanBuild\BuiltForCloud\Testing\McpProductAdmission;
 use ArtisanBuild\BuiltForCloud\Testing\WithCredentials;
@@ -26,6 +43,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Laravel\Mcp\Facades\Mcp;
+use Laravel\Mcp\Server\Tool;
 use Laravel\Mcp\Server\Transport\FakeTransporter;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -60,6 +78,26 @@ function assayMcpToolNames(TestResponse $response): array
     return array_column($response->json('result.tools'), 'name');
 }
 
+/** @return list<class-string<Tool>> */
+function assayMcpToolClasses(): array
+{
+    return [
+        UsageSummary::class,
+        TopRuns::class,
+        ReliabilitySummary::class,
+        RunTree::class,
+        RunContent::class,
+        SearchRuns::class,
+        FlagRun::class,
+        LabelRun::class,
+        DatasetCreate::class,
+        DatasetAdd::class,
+        DatasetList::class,
+        DatasetExport::class,
+        DeleteSubject::class,
+    ];
+}
+
 it('registers the two exact effect doors and advertises truthful metadata', function (): void {
     $read = Mcp::getWebServer('mcp');
     $destructive = Mcp::getWebServer('mcp/destructive');
@@ -68,8 +106,10 @@ it('registers the two exact effect doors and advertises truthful metadata', func
         ->and($destructive)->not->toBeNull()
         ->and($read?->gatherMiddleware())->toContain('bfc.mcp:product,read')
         ->and($destructive?->gatherMiddleware())->toContain('bfc.mcp:product,destructive')
-        ->and($read?->gatherMiddleware())->not->toContain('bfc.ability:mcp:read', 'bfc.ability:mcp:admin')
-        ->and($destructive?->gatherMiddleware())->not->toContain('bfc.ability:mcp:read', 'bfc.ability:mcp:admin')
+        ->and($read?->gatherMiddleware())->not->toContain('bfc.ability:mcp:read')
+        ->and($read?->gatherMiddleware())->not->toContain('bfc.ability:mcp:admin')
+        ->and($destructive?->gatherMiddleware())->not->toContain('bfc.ability:mcp:read')
+        ->and($destructive?->gatherMiddleware())->not->toContain('bfc.ability:mcp:admin')
         ->and(config('built-for-cloud.mcp.path'))->toBe('/mcp')
         ->and(config('built-for-cloud.mcp.write_path'))->toBeNull()
         ->and(config('built-for-cloud.mcp.destructive_path'))->toBe('/mcp/destructive')
@@ -152,6 +192,51 @@ it('conforms all thirteen eligible tools and snapshots their wire metadata', fun
         ]);
 });
 
+it('honors the canonical delegated principal across every registered tool', function (): void {
+    McpDelegatedEnforcement::assertHonors(
+        AssayMcpServer::class,
+        assayMcpToolClasses(),
+        ConsoleRole::Admin,
+        arguments: [
+            FlagRun::class => [
+                'run_id' => '00000000-0000-4000-8000-000000000000',
+                'labels' => ['delegated-enforcement'],
+            ],
+            LabelRun::class => [
+                'run_id' => '00000000-0000-4000-8000-000000000000',
+                'labels' => ['delegated-enforcement'],
+            ],
+        ],
+    );
+});
+
+it('refuses missing and unsupported MCP principals through the canonical resolver', function (): void {
+    $missing = Request::create('/mcp/direct');
+    app()->instance('request', $missing);
+
+    expect(resolve(McpAccess::class)->allows(AssayCredentialAbility::Usage))->toBeFalse()
+        ->and(fn () => resolve(McpAccess::class)->authorize(AssayCredentialAbility::Usage))
+        ->toThrow(NoActingPrincipal::class, 'No acting principal is available for this request.');
+
+    $actor = DelegatedActor::query()->create([
+        'identity_hash' => DelegatedActor::identityHash('unsupported-issuer', 'unsupported-subject'),
+        'issuer' => 'unsupported-issuer',
+        'subject' => 'unsupported-subject',
+        'last_handoff_display_name' => 'Unsupported MCP actor',
+        'last_handoff_role' => ConsoleRole::Admin,
+    ]);
+    $unsupported = Request::create('/mcp/direct');
+    app()->instance('request', $unsupported);
+    $unsupported->setUserResolver(static fn (): DelegatedActor => $actor);
+
+    expect(($unsupported->getUserResolver())())->toBe($actor)
+        ->and(resolve(McpAccess::class)->allows(AssayCredentialAbility::Usage))->toBeFalse()
+        ->and(fn () => resolve(ActingPrincipalResolver::class)->require($unsupported))
+        ->toThrow(DelegatedPrincipalUnsupported::class, 'A delegated actor must come from a verified request assertion.')
+        ->and(fn () => resolve(McpAccess::class)->authorize(AssayCredentialAbility::Usage))
+        ->toThrow(DelegatedPrincipalUnsupported::class, 'A delegated actor must come from a verified request assertion.');
+});
+
 it('hides unauthorized tools and enforces the read effect ceiling before execution', function (): void {
     $usage = $this->mintCredential([
         'purpose' => CredentialPurpose::Mcp,
@@ -218,7 +303,10 @@ it('projects delegated and person-bound principals without browser-session widen
         'jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => [],
     ])))->toBe(['usage_summary', 'top_runs', 'reliability_summary', 'run_tree']);
 
-    foreach ([[ConsoleRole::Member, 4], [ConsoleRole::Admin, 13]] as [$role, $count]) {
+    foreach ([
+        [ConsoleRole::Member, [UsageSummary::class, TopRuns::class, ReliabilitySummary::class, RunTree::class]],
+        [ConsoleRole::Admin, assayMcpToolClasses()],
+    ] as [$role, $expectedTools]) {
         $actor = DelegatedActor::query()->create([
             'identity_hash' => DelegatedActor::identityHash('mcp-test', $role->value),
             'issuer' => 'mcp-test',
@@ -244,7 +332,9 @@ it('projects delegated and person-bound principals without browser-session widen
 
         $server = app()->make(AssayMcpServer::class, ['transport' => new FakeTransporter]);
         $server->start();
-        expect($server->createContext()->tools())->toHaveCount($count);
+        expect($server->createContext()->tools()
+            ->map(static fn ($tool): string => $tool::class)
+            ->all())->toBe($expectedTools);
     }
 });
 
