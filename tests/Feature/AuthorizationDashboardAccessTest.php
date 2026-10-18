@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Authorization\AssayAccessPolicy;
+use App\Authorization\AssayCredentialAbility;
 use App\Authorization\ContentAccessSource;
 use App\Enums\AppAction;
 use App\Enums\ContentAccess;
@@ -364,6 +365,29 @@ it('denies every PR5 read to active ingest credentials and treats unknown or rev
         ->putJson(route('assay.access.set', $target), ['access' => 'granted'])
         ->assertForbidden();
     $this->withHeader('Authorization', $ingest->bearerHeader())
+        ->deleteJson(route('assay.access.reset', $target))
+        ->assertForbidden();
+    expect(ContentAccessOverride::query()->count())->toBe(0);
+});
+
+it('refuses non-Mcp credentials even when they carry explicit assay read abilities', function (): void {
+    $run = (string) Str::uuid();
+    $able = $this->mintCredential([
+        'purpose' => CredentialPurpose::Consumption,
+        'subject_type' => SubjectType::Installation,
+        'subject_ref' => 'able-consumption-read-app',
+        'abilities' => [AssayCredentialAbility::Usage->value, AssayCredentialAbility::Content->value],
+    ]);
+
+    foreach (pr5ReadUrls($run) as $url) {
+        $this->withHeader('Authorization', $able->bearerHeader())->getJson($url)->assertForbidden();
+    }
+
+    $target = createAssayUser('Able Write Target', UserRole::Member);
+    $this->withHeader('Authorization', $able->bearerHeader())
+        ->putJson(route('assay.access.set', $target), ['access' => 'granted'])
+        ->assertForbidden();
+    $this->withHeader('Authorization', $able->bearerHeader())
         ->deleteJson(route('assay.access.reset', $target))
         ->assertForbidden();
     expect(ContentAccessOverride::query()->count())->toBe(0);
