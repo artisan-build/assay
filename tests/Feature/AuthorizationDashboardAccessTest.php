@@ -487,6 +487,44 @@ it('keeps usage-only responses link-free and denies direct run-tree access acros
         ->assertForbidden();
 });
 
+it('serves HTML override writes with redirects authorization and the bounded reason', function (): void {
+    $owner = createAssayUser('Form Owner', UserRole::Owner);
+    $member = createAssayUser('Form Member', UserRole::Member);
+    $grantedMember = createAssayUser('Form Granted Member', UserRole::Member);
+
+    ContentAccessOverride::query()->create([
+        'actor_id' => (string) $grantedMember->getKey(),
+        'access' => ContentAccess::Granted,
+        'set_by_actor_id' => (string) $owner->getKey(),
+        'set_at' => now(),
+    ]);
+
+    $this->actingAs($grantedMember)->put(route('assay.access.set', $member), ['access' => 'granted'])
+        ->assertForbidden();
+    expect(ContentAccessOverride::query()->where('actor_id', (string) $member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->put(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => str_repeat('r', 500),
+    ])->assertRedirect(route('assay.access.index'));
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->value('access'))->toBe(ContentAccess::Granted);
+
+    $this->actingAs($owner)->delete(route('assay.access.reset', $member))
+        ->assertRedirect(route('assay.access.index'));
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->from(route('assay.access.index'))->put(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => str_repeat('r', 501),
+    ])->assertSessionHasErrors('reason');
+    expect(ContentAccessOverride::query()->whereKey($member->getKey())->exists())->toBeFalse();
+
+    $this->actingAs($owner)->put(route('assay.access.set', $member), [
+        'access' => 'not-a-real-access',
+    ])->assertSessionHasErrors('access');
+    expect(ContentAccessOverride::query()->count())->toBe(1);
+});
+
 it('renders structural dashboard and access sections without reasons secrets content or money vocabulary', function (): void {
     $owner = createAssayUser('Surface Owner', UserRole::Owner);
     $member = createAssayUser('Surface Member', UserRole::Member);
