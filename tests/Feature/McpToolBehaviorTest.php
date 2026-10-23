@@ -194,10 +194,9 @@ it('executes the complete tool surface with bounded app isolation and metadata c
     foreach ([$top, $reliability, $tree] as $metadataResponse) {
         $metadataResponse->assertOk()->assertJsonPath('result.isError', false);
         $encoded = (string) $metadataResponse->getContent();
-        expect($encoded)->not->toContain(
-            'RAW-CONTENT-CANARY-A', 'RAW-CONTENT-CANARY-B',
-            'INSTRUCTIONS-', 'MESSAGE-', 'OUTPUT-', '"secret"',
-        );
+        foreach (['RAW-CONTENT-CANARY-A', 'RAW-CONTENT-CANARY-B', 'INSTRUCTIONS-', 'MESSAGE-', 'OUTPUT-', '"secret"'] as $excluded) {
+            expect($encoded)->not->toContain($excluded);
+        }
     }
 
     $content = mcp8Result(mcp8Call('/mcp/destructive', $credential, 'run_content', [
@@ -388,8 +387,8 @@ it('denies every handle before validation query or effect when its Assay ability
 
     $assertDenied = function (MintedTestCredential $credential, string $tool, bool $preview = false) use (&$queries): void {
         $request = HttpRequest::create('/mcp/destructive', 'POST');
-        $request->setUserResolver(static fn () => $credential->credential);
         app()->instance('request', $request);
+        $request->setUserResolver(static fn () => $credential->credential);
         $instance = resolve($tool);
         $before = count($queries);
 
@@ -525,10 +524,12 @@ it('bounds content decoding failures without leaking values or credential materi
         'app_audit' => DB::table('bfc_app_action_events')->get(),
     ], JSON_THROW_ON_ERROR);
 
-    expect($durable)->not->toContain(
+    foreach ([
         $credential->plaintext(), hash('sha256', $credential->plaintext()),
         'MCP-ERROR-RAW-CANARY', 'SQLSTATE', 'QueryException', 'assay_messages',
-    );
+    ] as $excluded) {
+        expect($durable)->not->toContain($excluded);
+    }
 });
 
 it('burns a valid confirmation before a protected erasure failure', function (): void {
@@ -661,8 +662,10 @@ it('runs delete subject as a single-use argument and credential-bound two-phase 
         'logs' => $logs,
         'journal' => Storage::disk('erasure-journal')->allFiles(),
     ], JSON_THROW_ON_ERROR);
-    expect($durable)->not->toContain(
+    foreach ([
         $first->plaintext(), hash('sha256', $first->plaintext()), $confirmation,
         'MCP-DELETE-RAW-CANARY', 'MCP-SUBJECT-SECRET-CANARY', 'SQLSTATE',
-    );
+    ] as $excluded) {
+        expect($durable)->not->toContain($excluded);
+    }
 });
