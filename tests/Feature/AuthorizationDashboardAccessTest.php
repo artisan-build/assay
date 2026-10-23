@@ -171,6 +171,28 @@ it('projects explicit usage and content abilities for defaults, overrides, absen
     expect([$delegatedAccess->usage, $delegatedAccess->content])->toBe([true, true]);
 });
 
+it('refuses an offboarded delegated actor instead of trusting its role claim', function (): void {
+    $delegated = DelegatedActor::query()->create([
+        'identity_hash' => DelegatedActor::identityHash('issuer', 'offboarded'),
+        'issuer' => 'issuer',
+        'subject' => 'offboarded',
+        'last_handoff_display_name' => 'Offboarded',
+        'last_handoff_role' => ConsoleRole::Admin,
+    ]);
+    $delegated->forceFill(['deactivated_at' => now()])->save();
+
+    $access = resolve(AssayAccessPolicy::class)->decide(
+        ActingPrincipal::delegatedRequest(
+            $delegated,
+            new DelegatedClaims('Offboarded', ConsoleRole::Admin, 'Agency'),
+        ),
+        null,
+    );
+
+    expect([$access->usage, $access->content])->toBe([false, false])
+        ->and($access->source)->toBe(ContentAccessSource::NotAdmitted);
+});
+
 it('enforces owner admin member management authority and leaves forbidden writes inert', function (): void {
     $owner = createAssayUser('Matrix Owner', UserRole::Owner);
     $admin = createAssayUser('Matrix Admin', UserRole::Admin);
@@ -256,6 +278,32 @@ it('persists overrides through role and admission changes and deletes defaults a
         ])
         ->and($events->pluck('action_vocabulary')->unique()->values()->all())->toBe([AppAction::class]);
     expect(json_encode($events->map->getAttributes()->all(), JSON_THROW_ON_ERROR))->not->toContain('bounded reason');
+});
+
+it('keeps redundant identical override sets inert and audit silent while a reason change records', function (): void {
+    $owner = createAssayUser('Redundant Owner', UserRole::Owner);
+    $member = createAssayUser('Redundant Member', UserRole::Member);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'first',
+    ])->assertOk()->assertJson(['changed' => true]);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'first',
+    ])->assertOk()->assertJson(['changed' => false]);
+
+    $this->actingAs($owner)->putJson(route('assay.access.set', $member), [
+        'access' => 'granted',
+        'reason' => 'second',
+    ])->assertOk()->assertJson(['changed' => true]);
+
+    expect(AppActionEvent::query()->count())->toBe(2)
+        ->and(AppActionEvent::query()->oldest('occurred_at')->pluck('action')->all())->toBe([
+            AppAction::ContentAccessOverrideSet->value,
+            AppAction::ContentAccessOverrideSet->value,
+        ]);
 });
 
 it('rolls back the override when the app-action recorder throws', function (): void {
@@ -444,7 +492,10 @@ it('renders structural dashboard and access sections without reasons secrets con
     $body = strtolower((string) $dashboard->getContent().$access->getContent());
 
     expect($body)->not->toMatch('/\b(price|cost|currency|budget)\b|[$€]/')
-        ->and($body)->not->toContain('prompt', 'response body', 'tool arguments', 'credential value');
+        ->and($body)->not->toContain('prompt')
+        ->and($body)->not->toContain('response body')
+        ->and($body)->not->toContain('tool arguments')
+        ->and($body)->not->toContain('credential value');
 });
 
 it('covers the people rows of the authorization surface matrix', function (): void {
