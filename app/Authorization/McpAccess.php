@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace App\Authorization;
 
 use ArtisanBuild\BuiltForCloud\Console\ActingPrincipal;
-use ArtisanBuild\BuiltForCloud\Console\RequestAssertion;
+use ArtisanBuild\BuiltForCloud\Console\ActingPrincipalResolver;
 use ArtisanBuild\BuiltForCloud\Credential;
 use Illuminate\Auth\Access\AuthorizationException;
-use Illuminate\Http\Request;
 
 final readonly class McpAccess
 {
-    public function __construct(private AssayAccessPolicy $policy) {}
+    public function __construct(
+        private AssayAccessPolicy $policy,
+        private ActingPrincipalResolver $principals,
+    ) {}
 
     public function allows(AssayCredentialAbility $ability): bool
     {
@@ -26,7 +28,7 @@ final readonly class McpAccess
 
     public function authorize(AssayCredentialAbility $ability): ActingPrincipal
     {
-        $resolved = $this->resolve();
+        $resolved = $this->resolve(required: true);
         $allowed = match ($ability) {
             AssayCredentialAbility::Usage => $resolved['decision']->usage,
             AssayCredentialAbility::Content => $resolved['decision']->content,
@@ -40,31 +42,27 @@ final readonly class McpAccess
     }
 
     /** @return array{principal: ActingPrincipal, decision: EffectiveAccess} */
-    private function resolve(): array
+    private function resolve(bool $required = false): array
     {
-        $request = resolve('request');
+        $principal = $required
+            ? $this->principals->require(request())
+            : $this->principals->resolve();
 
-        if (! $request instanceof Request) {
-            return $this->nobody();
-        }
-
-        $delegated = RequestAssertion::principal($request);
-
-        if ($delegated instanceof ActingPrincipal) {
+        if ($principal->delegated) {
             return [
-                'principal' => $delegated,
-                'decision' => $this->policy->decide($delegated, null),
+                'principal' => $principal,
+                'decision' => $this->policy->decide($principal, null),
             ];
         }
 
-        $credential = $request->user();
+        $credential = $principal->principal;
 
         if (! $credential instanceof Credential) {
             return $this->nobody();
         }
 
         return [
-            'principal' => ActingPrincipal::local('bfc', $credential),
+            'principal' => $principal,
             'decision' => $this->policy->projectCredential($credential),
         ];
     }

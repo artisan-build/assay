@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "52525b0c4b4d97d58ce345402b019337",
+    "content-hash": "9ce84d59ee797acc40d0621f35845b89",
     "packages": [
         {
             "name": "artisan-build/assay-contracts",
@@ -65,21 +65,84 @@
             }
         },
         {
-            "name": "artisan-build/built-for-cloud",
-            "version": "v0.19.10",
+            "name": "artisan-build/bfc-client",
+            "version": "v0.2.2",
             "source": {
                 "type": "git",
-                "url": "https://github.com/artisan-build/built-for-cloud.git",
-                "reference": "e40e6dd2d9e4d0ce72be0d3dfc2c989240298dea"
+                "url": "https://github.com/artisan-build/bfc-client.git",
+                "reference": "72a52df5a716493de89ea431d46dbfd9fdf33ce8"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/artisan-build/built-for-cloud/zipball/e40e6dd2d9e4d0ce72be0d3dfc2c989240298dea",
-                "reference": "e40e6dd2d9e4d0ce72be0d3dfc2c989240298dea",
+                "url": "https://api.github.com/repos/artisan-build/bfc-client/zipball/72a52df5a716493de89ea431d46dbfd9fdf33ce8",
+                "reference": "72a52df5a716493de89ea431d46dbfd9fdf33ce8",
                 "shasum": ""
             },
             "require": {
-                "artisan-build/built-for-cloud-contracts": "^0.4",
+                "illuminate/cache": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/contracts": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/database": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/encryption": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/filesystem": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/http": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/routing": "^11.17 || ^12.0 || ^13.0",
+                "illuminate/support": "^11.17 || ^12.0 || ^13.0",
+                "php": "^8.3"
+            },
+            "require-dev": {
+                "artisan-build/built-for-cloud": "^0.12.2",
+                "larastan/larastan": "^3.9",
+                "laravel/pint": "^1.27",
+                "orchestra/testbench": "^11.0",
+                "pestphp/pest": "^4.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "ArtisanBuild\\BfcClient\\BfcClientServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "ArtisanBuild\\BfcClient\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "description": "Client-side Built for Cloud package: stable client identity and proof-of-life for BfC client applications.",
+            "keywords": [
+                "artisan-build",
+                "built-for-cloud",
+                "laravel",
+                "laravel-cloud"
+            ],
+            "support": {
+                "issues": "https://github.com/artisan-build/bfc-client/issues",
+                "source": "https://github.com/artisan-build/bfc-client/tree/v0.2.2"
+            },
+            "time": "2026-10-13T13:23:58+00:00"
+        },
+        {
+            "name": "artisan-build/built-for-cloud",
+            "version": "v0.20.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/artisan-build/built-for-cloud.git",
+                "reference": "bad94c86d6a6310ef8f317cf45405fcd4f0f99d8"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/artisan-build/built-for-cloud/zipball/bad94c86d6a6310ef8f317cf45405fcd4f0f99d8",
+                "reference": "bad94c86d6a6310ef8f317cf45405fcd4f0f99d8",
+                "shasum": ""
+            },
+            "require": {
+                "artisan-build/bfc-client": "^0.2.2",
+                "artisan-build/built-for-cloud-contracts": "^0.4.1",
                 "composer/semver": "^3.4",
                 "illuminate/auth": "^13.24",
                 "illuminate/console": "^13.24",
@@ -117,6 +180,9 @@
                 }
             },
             "autoload": {
+                "files": [
+                    "src/compatibility-aliases.php"
+                ],
                 "psr-4": {
                     "ArtisanBuild\\BuiltForCloud\\": "src/"
                 }
@@ -134,22 +200,22 @@
             ],
             "support": {
                 "issues": "https://github.com/artisan-build/built-for-cloud/issues",
-                "source": "https://github.com/artisan-build/built-for-cloud/tree/v0.19.10"
+                "source": "https://github.com/artisan-build/built-for-cloud/tree/v0.20.0"
             },
-            "time": "2026-10-12T14:17:10+00:00"
+            "time": "2026-10-18T04:31:50+00:00"
         },
         {
             "name": "artisan-build/built-for-cloud-contracts",
-            "version": "v0.4.0",
+            "version": "v0.4.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/artisan-build/built-for-cloud-contracts.git",
-                "reference": "2206024671444388a2db018bc392a33c14720b91"
+                "reference": "dd6cb48eb12f2752ee7856bd5913f62f24b7f80d"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/artisan-build/built-for-cloud-contracts/zipball/2206024671444388a2db018bc392a33c14720b91",
-                "reference": "2206024671444388a2db018bc392a33c14720b91",
+                "url": "https://api.github.com/repos/artisan-build/built-for-cloud-contracts/zipball/dd6cb48eb12f2752ee7856bd5913f62f24b7f80d",
+                "reference": "dd6cb48eb12f2752ee7856bd5913f62f24b7f80d",
                 "shasum": ""
             },
             "require": {
@@ -179,9 +245,9 @@
             ],
             "support": {
                 "issues": "https://github.com/artisan-build/built-for-cloud-contracts/issues",
-                "source": "https://github.com/artisan-build/built-for-cloud-contracts/tree/v0.4.0"
+                "source": "https://github.com/artisan-build/built-for-cloud-contracts/tree/v0.4.1"
             },
-            "time": "2026-09-30T09:01:41+00:00"
+            "time": "2026-10-16T20:09:41+00:00"
         },
         {
             "name": "aws/aws-crt-php",
@@ -1895,16 +1961,16 @@
         },
         {
             "name": "laravel/mcp",
-            "version": "v1.0.1",
+            "version": "v1.1.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/laravel/mcp.git",
-                "reference": "92987a9d03847801299ff4abe909ba7686147dde"
+                "reference": "e77af70cd009aaa31455626bd463b0e7e39cfcf9"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/laravel/mcp/zipball/92987a9d03847801299ff4abe909ba7686147dde",
-                "reference": "92987a9d03847801299ff4abe909ba7686147dde",
+                "url": "https://api.github.com/repos/laravel/mcp/zipball/e77af70cd009aaa31455626bd463b0e7e39cfcf9",
+                "reference": "e77af70cd009aaa31455626bd463b0e7e39cfcf9",
                 "shasum": ""
             },
             "require": {
@@ -1922,6 +1988,7 @@
                 "symfony/process": "^7.4.5|^8.0.5"
             },
             "require-dev": {
+                "jasonmccreary/double": "^1.0",
                 "laravel/pint": "^1.20",
                 "orchestra/testbench": "^9.15|^10.8|^11.0",
                 "pestphp/pest": "^3.8.5|^4.3.2",
@@ -1965,7 +2032,7 @@
                 "issues": "https://github.com/laravel/mcp/issues",
                 "source": "https://github.com/laravel/mcp"
             },
-            "time": "2026-09-24T10:45:09+00:00"
+            "time": "2026-10-21T11:50:42+00:00"
         },
         {
             "name": "laravel/prompts",
@@ -6722,16 +6789,16 @@
         },
         {
             "name": "symfony/process",
-            "version": "v8.1.7",
+            "version": "v8.1.9",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/process.git",
-                "reference": "10823b09358e690df4ff943e24e8492bb1019fc3"
+                "reference": "59a682fd049b2d4d37c444f5ac21b7d01b8c7189"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/process/zipball/10823b09358e690df4ff943e24e8492bb1019fc3",
-                "reference": "10823b09358e690df4ff943e24e8492bb1019fc3",
+                "url": "https://api.github.com/repos/symfony/process/zipball/59a682fd049b2d4d37c444f5ac21b7d01b8c7189",
+                "reference": "59a682fd049b2d4d37c444f5ac21b7d01b8c7189",
                 "shasum": ""
             },
             "require": {
@@ -6763,7 +6830,7 @@
             "description": "Executes commands in sub-processes",
             "homepage": "https://symfony.com",
             "support": {
-                "source": "https://github.com/symfony/process/tree/v8.1.7"
+                "source": "https://github.com/symfony/process/tree/v8.1.9"
             },
             "funding": [
                 {
@@ -6783,7 +6850,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-09-02T12:40:29+00:00"
+            "time": "2026-10-08T16:57:43+00:00"
         },
         {
             "name": "symfony/routing",
