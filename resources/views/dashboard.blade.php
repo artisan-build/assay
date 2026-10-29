@@ -21,30 +21,32 @@
     @foreach ($tables as $name => $table)
         <section data-testid="dashboard-{{ $name }}">
             <h2>{{ str($name)->replace('-', ' ')->title() }}</h2>
-            <table>
-                <thead>
-                    <tr>
-                        @foreach ($table->headers as $header)
-                            <th scope="col">{{ str($header)->replace('_', ' ') }}</th>
-                        @endforeach
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach ($table->rows as $row)
+            <div class="overflow-x-auto" data-testid="dashboard-table-scroll">
+                <table class="whitespace-nowrap">
+                    <thead>
                         <tr>
                             @foreach ($table->headers as $header)
-                                <td>
-                                    @if ($name === 'top-runs' && $header === 'run_tree_id' && $decision->content)
-                                        <a href="{{ route('assay.runs.tree', ['run' => $row[$header]]) }}">Run tree</a>
-                                    @else
-                                        {{ $row[$header] ?? '' }}
-                                    @endif
-                                </td>
+                                <th scope="col">{{ str($header)->replace('_', ' ') }}</th>
                             @endforeach
                         </tr>
-                    @endforeach
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        @foreach ($table->rows as $row)
+                            <tr>
+                                @foreach ($table->headers as $header)
+                                    <td>
+                                        @if ($name === 'top-runs' && $header === 'run_tree_id' && $decision->content)
+                                            <a href="{{ route('assay.runs.tree', ['run' => $row[$header]]) }}">Run tree</a>
+                                        @else
+                                            {{ $row[$header] ?? '' }}
+                                        @endif
+                                    </td>
+                                @endforeach
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
         </section>
     @endforeach
 </div>
