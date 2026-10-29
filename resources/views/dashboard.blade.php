@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Assay usage</title>
+<x-bfc-layout title="Assay usage">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="dashboard">
+    @endpush
+<div data-testid="dashboard">
     <h1>Usage dashboard</h1>
     <p><a href="{{ route('assay.risk') }}">Full-capture risk and operations guide</a></p>
 
@@ -52,6 +47,5 @@
             </table>
         </section>
     @endforeach
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>
