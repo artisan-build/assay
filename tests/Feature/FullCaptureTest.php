@@ -154,6 +154,66 @@ it('ingests an always-on-failure flush once without duplicating usage steps fail
         ->and(DB::table('assay_content_attach_receipts')->where('status', 'accepted')->count())->toBe(4);
 });
 
+it('returns each content run once when stored ancestry contains a cycle', function (): void {
+    $owner = fullCaptureUser('Cycle Owner', UserRole::Owner);
+    ProcessUsageEnvelope::fromContract(
+        'cycle-content-app',
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope([
+            EnvelopeFactory::record([
+                'invocation_id' => 'cycle-content-root',
+                'capture' => 'full',
+                'content' => ['instructions' => 'root instructions'],
+            ]),
+            EnvelopeFactory::record([
+                'invocation_id' => 'cycle-content-child',
+                'parent_invocation_id' => 'cycle-content-root',
+                'capture' => 'full',
+                'content' => ['instructions' => 'child instructions'],
+            ]),
+        ]),
+    )->handle(resolve(UsageIngestProcessor::class));
+    $root = (string) DB::table('assay_runs')->where('invocation_id', 'cycle-content-root')->value('id');
+    $child = (string) DB::table('assay_runs')->where('invocation_id', 'cycle-content-child')->value('id');
+    DB::table('assay_runs')->where('id', $root)->update(['parent_run_id' => $child]);
+    DB::statement("SET LOCAL statement_timeout = '2000ms'");
+
+    $rows = $this->actingAs($owner)->getJson(route('assay.runs.tree', $root))
+        ->assertOk()->assertJsonCount(2, 'rows')->json('rows');
+
+    expect(array_column($rows, 'run_id'))->toEqualCanonicalizing([$root, $child]);
+    expect(collect($rows)->keyBy('run_id')->get($root)['content_records'][0]['content'])
+        ->toBe(['instructions' => 'root instructions']);
+    expect(collect($rows)->keyBy('run_id')->get($child)['content_records'][0]['content'])
+        ->toBe(['instructions' => 'child instructions']);
+});
+
+it('caps content trees at five hundred runs for wide and deep ancestry', function (bool $deep): void {
+    $owner = fullCaptureUser('Bounded Tree Owner', UserRole::Owner);
+    $records = [];
+    for ($index = 0; $index <= 500; $index++) {
+        $records[] = EnvelopeFactory::record([
+            'invocation_id' => 'bounded-run-'.$index,
+            'parent_invocation_id' => $index === 0 ? null : 'bounded-run-'.($deep ? $index - 1 : 0),
+        ]);
+    }
+    ProcessUsageEnvelope::fromContract(
+        'bounded-content-app',
+        '2026-10-01T12:00:00.000000+00:00',
+        EnvelopeFactory::envelope($records),
+    )->handle(resolve(UsageIngestProcessor::class));
+    $root = (string) DB::table('assay_runs')->where('invocation_id', 'bounded-run-0')->value('id');
+    DB::statement("SET LOCAL statement_timeout = '2000ms'");
+
+    $rows = $this->actingAs($owner)->getJson(route('assay.runs.tree', $root))
+        ->assertOk()->assertJsonCount(500, 'rows')->json('rows');
+
+    expect(array_unique(array_column($rows, 'run_id')))->toHaveCount(500);
+    if ($deep) {
+        expect(array_column($rows, 'invocation_id'))->not->toContain('bounded-run-500');
+    }
+})->with(['wide' => [false], 'deep' => [true]]);
+
 it('round-trips every frozen content shape through PostgreSQL and the run tree', function (): void {
     $message = [
         'role' => 'assistant',
