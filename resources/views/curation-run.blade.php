@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Curate Assay run</title>
+<x-bfc-layout title="Curate Assay run">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="run-curation">
+    @endpush
+<div data-testid="run-curation">
     <h1>Curate run</h1>
     <form method="post" action="{{ route('assay.runs.flag', ['run' => $run]) }}" data-testid="run-curation-flag">
         @csrf
@@ -25,6 +20,5 @@
         <textarea id="note" name="note">{{ $flag['note'] }}</textarea>
         <button type="submit">Save flag</button>
     </form>
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>

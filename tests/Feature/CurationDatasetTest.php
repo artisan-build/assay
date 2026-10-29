@@ -819,6 +819,18 @@ it('gates every PR7 route through central content policy and keeps usage project
     }
 });
 
+it('uses the dataset name in the page title and preserves its form targets', function (): void {
+    $owner = createPr7User('Dataset Title Owner', UserRole::Owner);
+    $dataset = resolve(DatasetManager::class)->create('Research <draft> & review');
+
+    $this->actingAs($owner)->get(route('assay.datasets.show', $dataset['id']))
+        ->assertOk()
+        ->assertSeeHtml('<title>'.e($dataset['name']).' - Assay dataset</title>')
+        ->assertSeeHtml('data-testid="dataset-detail"')
+        ->assertSeeHtml('action="'.route('assay.datasets.items.add', $dataset['id']).'"')
+        ->assertSeeHtml('action="'.route('assay.datasets.exports.request', $dataset['id']).'"');
+});
+
 it('renders structural curation disclosures from test-created data and keeps canaries out of validation logs and queue residue', function (): void {
     $owner = createPr7User('PR7 Surface Owner', UserRole::Owner);
     $source = ingestPr7Run('surface-run', 'surface-subject');

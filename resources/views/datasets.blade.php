@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Assay datasets</title>
+<x-bfc-layout title="Assay datasets">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="datasets">
+    @endpush
+<div data-testid="datasets">
     <h1>Datasets</h1>
     <section data-testid="datasets-retention-disclosure">
         <h2>Curated-copy retention</h2>
@@ -34,6 +29,5 @@
             </article>
         @endforeach
     </section>
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>
