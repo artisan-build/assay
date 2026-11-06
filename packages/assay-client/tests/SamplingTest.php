@@ -302,7 +302,11 @@ it('sends usage immediately and flushes post-hook content attaches once on step 
         ->and($beforeFailure->first(fn (RecordV1 $record): bool => $record->type === RecordType::RunStart))->not->toBeNull()
         ->and($beforeFailure->first(fn (RecordV1 $record): bool => $record->type === RecordType::StepEnd)?->usage?->inputTokens)->toBe(4)
         ->and(implode('', array_column($dispatcher->dispatched, 'json')))
-        ->not->toContain('raw instructions', 'raw output', 'masked instructions', 'masked output', 'linked private input');
+        ->not->toContain('raw instructions')
+        ->not->toContain('raw output')
+        ->not->toContain('masked instructions')
+        ->not->toContain('masked output')
+        ->not->toContain('linked private input');
 
     $recorder->record(new StepInput(
         RecordType::StepFail,
@@ -326,7 +330,8 @@ it('sends usage immediately and flushes post-hook content attaches once on step 
     $attachIds = $attaches->pluck('recordId')->map(fn ($id): string => (string) $id);
     $targetIds = $attaches->pluck('targetRecordId')->map(fn ($id): string => (string) $id);
     expect($wire)->toContain('masked instructions', 'masked output', 'linked private input', 'step failed', 'agent failed')
-        ->and($wire)->not->toContain('raw instructions', 'raw output')
+        ->and($wire)->not->toContain('raw instructions')
+        ->and($wire)->not->toContain('raw output')
         ->and($filter->calls)->toBe(6)
         ->and($originals)->toHaveCount(6)
         ->and($originals->pluck('capture')->unique()->all())->toBe([CaptureMode::Usage])
@@ -371,7 +376,8 @@ it('counts encoded multibyte content bytes and evicts the oldest content first',
     }
 
     $recorder->flush();
-    expect(implode('', array_column($dispatcher->dispatched, 'json')))->not->toContain($oldest, $newest);
+    expect(implode('', array_column($dispatcher->dispatched, 'json')))->not->toContain($oldest)
+        ->not->toContain($newest);
     $recorder->record(new StepInput(
         RecordType::StepFail,
         'truncated',

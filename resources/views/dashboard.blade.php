@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Assay usage</title>
+<x-bfc-layout title="Assay usage">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="dashboard">
+    @endpush
+<div data-testid="dashboard">
     <h1>Usage dashboard</h1>
     <p><a href="{{ route('assay.risk') }}">Full-capture risk and operations guide</a></p>
 
@@ -26,32 +21,33 @@
     @foreach ($tables as $name => $table)
         <section data-testid="dashboard-{{ $name }}">
             <h2>{{ str($name)->replace('-', ' ')->title() }}</h2>
-            <table>
-                <thead>
-                    <tr>
-                        @foreach ($table->headers as $header)
-                            <th scope="col">{{ str($header)->replace('_', ' ') }}</th>
-                        @endforeach
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach ($table->rows as $row)
+            <div class="overflow-x-auto" data-testid="dashboard-table-scroll">
+                <table class="whitespace-nowrap">
+                    <thead>
                         <tr>
                             @foreach ($table->headers as $header)
-                                <td>
-                                    @if ($name === 'top-runs' && $header === 'run_tree_id' && $decision->content)
-                                        <a href="{{ route('assay.runs.tree', ['run' => $row[$header]]) }}">Run tree</a>
-                                    @else
-                                        {{ $row[$header] ?? '' }}
-                                    @endif
-                                </td>
+                                <th scope="col">{{ str($header)->replace('_', ' ') }}</th>
                             @endforeach
                         </tr>
-                    @endforeach
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        @foreach ($table->rows as $row)
+                            <tr>
+                                @foreach ($table->headers as $header)
+                                    <td>
+                                        @if ($name === 'top-runs' && $header === 'run_tree_id' && $decision->content)
+                                            <a href="{{ route('assay.runs.tree', ['run' => $row[$header]]) }}">Run tree</a>
+                                        @else
+                                            {{ $row[$header] ?? '' }}
+                                        @endif
+                                    </td>
+                                @endforeach
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
         </section>
     @endforeach
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>

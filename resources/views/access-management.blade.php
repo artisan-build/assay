@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Assay access</title>
+<x-bfc-layout title="Assay access">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="access-management">
+    @endpush
+<div data-testid="access-management">
     <h1>Content access</h1>
     <table>
         <thead>
@@ -59,6 +54,5 @@
             @endforeach
         </tbody>
     </table>
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>

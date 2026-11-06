@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ $dataset['name'] }} - Assay dataset</title>
+<x-bfc-layout :title="$dataset['name'].' - Assay dataset'">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="dataset-detail">
+    @endpush
+<div data-testid="dataset-detail">
     <h1>{{ $dataset['name'] }}</h1>
     <p data-testid="dataset-retention">{{ $dataset['retention_days'] === null ? 'No expiry' : $dataset['retention_days'].' days from item addition' }}</p>
     <form method="post" action="{{ route('assay.datasets.items.add', ['dataset' => $dataset['id']]) }}" data-testid="dataset-add-item">
@@ -25,6 +20,5 @@
             <article data-testid="dataset-item">{{ $item['id'] }}</article>
         @endforeach
     </section>
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>

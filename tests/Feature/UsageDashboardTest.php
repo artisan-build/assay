@@ -239,6 +239,37 @@ function seedDashboardData(): void
     resolve(UsageIngestProcessor::class)->reconcileStale(CarbonImmutable::parse('2026-10-01T13:00:00.000000+00:00'));
 }
 
+it('contains every dashboard table in a horizontal scroll container without crushing cells', function (): void {
+    $owner = dashboardOwner();
+    seedDashboardData();
+
+    $response = $this->actingAs($owner)->get(route('assay.dashboard'))->assertOk();
+    $document = new DOMDocument;
+    $document->loadHTML((string) $response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+    $xpath = new DOMXPath($document);
+    $tables = $xpath->query('//*[@data-testid="dashboard"]//table');
+
+    expect($tables)->toHaveCount(7);
+
+    foreach ($tables as $table) {
+        $container = $table->parentNode;
+
+        expect($container)->toBeInstanceOf(DOMElement::class)
+            ->and($container->getAttribute('data-testid'))->toBe('dashboard-table-scroll')
+            ->and(explode(' ', $container->getAttribute('class')))->toContain('overflow-x-auto')
+            ->and(explode(' ', $table->getAttribute('class')))->toContain('whitespace-nowrap')
+            ->and($xpath->query('./thead/tr/th[@scope="col"]', $table)->length)->toBeGreaterThan(0)
+            ->and($xpath->query('./tbody/tr/td', $table)->length)->toBeGreaterThan(0);
+    }
+
+    $response->assertSee('=formula-app')
+        ->assertSee('=FormulaAgent')
+        ->assertSee('safe-subject')
+        ->assertSee('agent-failed')
+        ->assertSee('=dangerous-tool')
+        ->assertSee('embed-responded');
+});
+
 it('projects discriminating PostgreSQL data across all seven dashboard tables', function (): void {
     $owner = dashboardOwner();
     seedDashboardData();

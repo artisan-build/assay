@@ -1,13 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Assay full-capture risk guide</title>
+<x-bfc-layout title="Assay full-capture risk guide">
+    @push('head')
     <link rel="stylesheet" href="/build/assets/app.css">
-</head>
-<body>
-<main data-testid="risk-page">
+    @endpush
+<div data-testid="risk-page">
     <h1>Full-capture risk and operations guide</h1>
 
     <section data-testid="risk-storage">
@@ -108,6 +103,5 @@
     return new OutboundPayload($payload->product, $payload->kind, $payload->schemaVersion, PayloadDisposition::Droppable, $data, $payload->attributes);
 }</code></pre>
     </section>
-</main>
-</body>
-</html>
+</div>
+</x-bfc-layout>

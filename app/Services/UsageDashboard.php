@@ -768,13 +768,18 @@ final class UsageDashboard
     {
         $rows = $this->rows(<<<'SQL'
             WITH RECURSIVE run_tree AS (
-                SELECT * FROM assay_runs WHERE id = ?
+                SELECT run.*, ARRAY[run.id]::uuid[] AS path, 0 AS depth
+                FROM assay_runs run WHERE run.id = ?
 
                 UNION ALL
 
-                SELECT child.*
+                SELECT child.*, parent.path || child.id, parent.depth + 1
                 FROM assay_runs child
                 INNER JOIN run_tree parent ON child.parent_run_id = parent.id
+                WHERE
+                    child.app_id = parent.app_id
+                    AND parent.depth < 499
+                    AND NOT child.id = ANY(parent.path)
             )
             SELECT
                 id AS run_id,
@@ -794,6 +799,7 @@ final class UsageDashboard
                 failure_class
             FROM run_tree
             ORDER BY started_at NULLS LAST, id
+            LIMIT 500
             SQL, [$runId]);
 
         foreach ($rows as &$row) {
