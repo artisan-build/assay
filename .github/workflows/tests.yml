@@ -75,7 +75,7 @@ jobs:
 
       - name: Audit dependencies
         run: |
-          composer audit
+          composer audit --locked --abandoned=report
           composer packages:audit
 
   lowest-dependencies:
